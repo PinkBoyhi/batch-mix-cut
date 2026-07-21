@@ -1,6 +1,6 @@
 {
   "name": "batch-mix-cut",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "本地批量混剪与剪映草稿替换工具",

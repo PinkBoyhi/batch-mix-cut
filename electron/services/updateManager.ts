@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
-import { autoUpdater } from "electron-updater";
+import { createRequire } from "node:module";
 import type { AppUpdater, ProgressInfo, UpdateCheckResult, UpdateInfo } from "electron-updater";
+
+const require = createRequire(import.meta.url);
+const { autoUpdater } = require("electron-updater") as typeof import("electron-updater");
 
 export type UpdateStatus =
   | "idle"
