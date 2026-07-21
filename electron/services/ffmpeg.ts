@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AssetInfo, MixCombination, MixProjectConfig } from "../../src/shared/types.js";
+import { describeMissingBinary, getFfmpegPath } from "./ffmpegBinaries.js";
 
 export interface ExportHandle {
   promise: Promise<void>;
@@ -95,7 +96,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     );
 
     await new Promise<void>((resolve, reject) => {
-      child = spawn("ffmpeg", args);
+      child = spawn(getFfmpegPath(), args);
       let stderr = "";
 
       child.stderr.on("data", (chunk: Buffer) => {
@@ -105,7 +106,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
         }
       });
 
-      child.on("error", reject);
+      child.on("error", (error) => reject(describeMissingBinary("ffmpeg", error)));
       child.on("close", (code) => {
         if (cancelled) {
           reject(new Error("任务已停止"));
@@ -162,7 +163,7 @@ function measureMeanVolume(filePath: string): Promise<number | undefined> {
   }
 
   const promise = new Promise<number | undefined>((resolve) => {
-    const child = spawn("ffmpeg", ["-hide_banner", "-nostats", "-i", filePath, "-af", "volumedetect", "-f", "null", "-"]);
+    const child = spawn(getFfmpegPath(), ["-hide_banner", "-nostats", "-i", filePath, "-af", "volumedetect", "-f", "null", "-"]);
     let stderr = "";
 
     child.stderr.on("data", (chunk: Buffer) => {

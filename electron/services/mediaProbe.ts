@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { AssetInfo } from "../../src/shared/types.js";
+import { getFfprobePath } from "./ffmpegBinaries.js";
 
 interface ProbeStream {
   codec_type?: string;
@@ -31,7 +32,7 @@ export async function probeAsset(asset: AssetInfo): Promise<AssetInfo> {
 
 function runFfprobe(filePath: string): Promise<ProbeOutput> {
   return new Promise((resolve) => {
-    const child = spawn("ffprobe", [
+    const child = spawn(getFfprobePath(), [
       "-v",
       "error",
       "-print_format",

@@ -1,6 +1,12 @@
 allowBuilds:
+  '@ffmpeg-installer/darwin-arm64': true
+  '@ffprobe-installer/darwin-arm64': true
   electron: true
   esbuild: true
 onlyBuiltDependencies:
+  - '@ffmpeg-installer/darwin-arm64'
+  - '@ffmpeg-installer/darwin-x64'
+  - '@ffprobe-installer/darwin-arm64'
+  - '@ffprobe-installer/darwin-x64'
   - electron
   - esbuild
