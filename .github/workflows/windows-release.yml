@@ -1,0 +1,50 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      update_url:
+        description: "自动更新静态目录 URL，例如 https://your-domain.com/batch-mix-cut/updates/"
+        required: true
+        type: string
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Set update URL
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json -Depth 100
+          $package.build.publish.url = "${{ inputs.update_url }}"
+          $package | ConvertTo-Json -Depth 100 | Set-Content package.json -Encoding UTF8
+
+      - name: Build renderer and Electron
+        run: pnpm build
+
+      - name: Build Windows installer
+        run: pnpm exec electron-builder --win --x64 --publish never
+
+      - name: Upload release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            release/*.exe
+            release/*.yml
+            release/*.blockmap
