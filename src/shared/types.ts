@@ -113,6 +113,14 @@ export interface UpdateSnapshot {
   error?: string;
 }
 
+export interface UpdateReleaseNotes {
+  version: string;
+  name: string;
+  publishedAt?: string;
+  body: string;
+  url: string;
+}
+
 export interface JianyingTemplateMapping {
   templatePath: string;
   slotNames: string[];
@@ -247,9 +255,11 @@ export interface AppApi {
   retryFailures: () => Promise<BatchJobSnapshot>;
   getJob: () => Promise<BatchJobSnapshot>;
   revealPath: (targetPath: string) => Promise<void>;
+  openExternal: (url: string) => Promise<void>;
   checkForUpdates: () => Promise<UpdateSnapshot>;
   installUpdate: () => Promise<void>;
   getUpdateStatus: () => Promise<UpdateSnapshot>;
+  getUpdateReleaseNotes: () => Promise<UpdateReleaseNotes>;
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) => () => void;
   getCloudSettings: () => Promise<CloudSettingsView>;
   saveCloudSettings: (settings: CloudSettings) => Promise<CloudSettingsView>;

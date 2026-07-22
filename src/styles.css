@@ -151,6 +151,10 @@ button:disabled {
 }
 
 .secondary-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   min-height: 36px;
   padding: 0 12px;
   color: #17436d;
@@ -643,6 +647,109 @@ button:disabled {
   margin-top: 14px;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgb(13 36 58 / 34%);
+  backdrop-filter: blur(6px);
+}
+
+.release-modal {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  width: min(720px, 100%);
+  max-height: min(720px, calc(100vh - 44px));
+  overflow: hidden;
+  color: #17324d;
+  background: #ffffff;
+  border: 1px solid #cfe2f6;
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgb(17 57 98 / 28%);
+}
+
+.release-modal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid #e1edf9;
+}
+
+.release-modal-head span {
+  color: #5c7897;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.release-modal-head h2 {
+  margin: 4px 0 0;
+  color: #0d315a;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.release-modal-head button {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: #17436d;
+  background: #edf6ff;
+  border-radius: 8px;
+}
+
+.release-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid #e6f0fa;
+}
+
+.release-meta span {
+  padding: 6px 9px;
+  color: #315b84;
+  background: #edf6ff;
+  border: 1px solid #d6e7f8;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.release-body {
+  min-height: 220px;
+  overflow: auto;
+  padding: 18px 20px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.release-body pre {
+  margin: 0;
+  color: #1c3855;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  line-height: 1.65;
+}
+
+.release-body .notice {
+  margin: 0;
+}
+
+.release-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid #e1edf9;
+}
+
 .request-input {
   max-width: 280px;
 }
@@ -942,6 +1049,19 @@ td {
 
   .row-actions button {
     width: 100%;
+  }
+
+  .modal-backdrop {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .release-modal {
+    max-height: calc(100vh - 24px);
+  }
+
+  .release-modal-actions {
+    flex-direction: column;
   }
 
   .failure-list div {

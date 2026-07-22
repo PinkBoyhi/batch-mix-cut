@@ -1,9 +1,11 @@
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import type { UpdateReleaseNotes } from "../../src/shared/types.js";
 import type { AppUpdater, ProgressInfo, UpdateCheckResult, UpdateInfo } from "electron-updater";
 
 const require = createRequire(import.meta.url);
 const { autoUpdater } = require("electron-updater") as typeof import("electron-updater");
+const latestReleaseApiUrl = "https://api.github.com/repos/PinkBoyhi/batch-mix-cut/releases/latest";
 
 export type UpdateStatus =
   | "idle"
@@ -64,6 +66,36 @@ export class UpdateManager extends EventEmitter {
 
     await this.updater.checkForUpdates();
     return this.getSnapshot();
+  }
+
+  async getReleaseNotes(): Promise<UpdateReleaseNotes> {
+    const response = await fetch(latestReleaseApiUrl, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "YiboBioMixCut-Updater"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`更新日志获取失败：HTTP ${response.status}`);
+    }
+
+    const payload = (await response.json()) as {
+      tag_name?: string;
+      name?: string;
+      published_at?: string;
+      body?: string;
+      html_url?: string;
+    };
+    const version = (payload.tag_name ?? "").replace(/^v/i, "") || this.snapshot.availableVersion || this.snapshot.currentVersion;
+
+    return {
+      version,
+      name: payload.name || `医博生物混剪工具 ${version}`,
+      publishedAt: payload.published_at,
+      body: payload.body?.trim() || "这个版本暂时没有填写更新说明。",
+      url: payload.html_url || "https://github.com/PinkBoyhi/batch-mix-cut/releases/latest"
+    };
   }
 
   quitAndInstall(): void {

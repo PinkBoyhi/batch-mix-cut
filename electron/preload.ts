@@ -23,9 +23,11 @@ const api: AppApi = {
   retryFailures: () => ipcRenderer.invoke("job:retry-failures"),
   getJob: () => ipcRenderer.invoke("job:get"),
   revealPath: (targetPath: string) => ipcRenderer.invoke("shell:reveal-path", targetPath),
+  openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
+  getUpdateReleaseNotes: () => ipcRenderer.invoke("update:get-release-notes"),
   onUpdateStatus: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, snapshot: UpdateSnapshot) => callback(snapshot);
     ipcRenderer.on("update:status", listener);

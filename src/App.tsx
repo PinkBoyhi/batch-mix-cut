@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cloud,
+  FileText,
   FolderOpen,
   ListPlus,
   Music,
@@ -31,6 +32,7 @@ import type {
   MixCombination,
   MixProjectConfig,
   SegmentSlot,
+  UpdateReleaseNotes,
   UpdateSnapshot
 } from "./shared/types";
 
@@ -96,6 +98,10 @@ export default function App() {
   const [cloudImportRequestId, setCloudImportRequestId] = useState("");
   const [cloudImportResults, setCloudImportResults] = useState<CloudImportResult[]>([]);
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot>(emptyUpdate);
+  const [releaseNotes, setReleaseNotes] = useState<UpdateReleaseNotes | undefined>();
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const [releaseNotesLoading, setReleaseNotesLoading] = useState(false);
+  const [releaseNotesError, setReleaseNotesError] = useState<string | undefined>();
 
   useEffect(() => {
     if (!api) return;
@@ -287,6 +293,29 @@ export default function App() {
   async function installUpdate() {
     if (!api) return;
     await api.installUpdate();
+  }
+
+  async function openReleaseNotes() {
+    if (!api) return;
+    setReleaseNotesOpen(true);
+    setReleaseNotesLoading(true);
+    setReleaseNotesError(undefined);
+    try {
+      setReleaseNotes(await api.getUpdateReleaseNotes());
+    } catch (err) {
+      setReleaseNotesError(toMessage(err));
+    } finally {
+      setReleaseNotesLoading(false);
+    }
+  }
+
+  async function openReleasePage() {
+    if (!api || !releaseNotes?.url) return;
+    try {
+      await api.openExternal(releaseNotes.url);
+    } catch (err) {
+      setReleaseNotesError(toMessage(err));
+    }
   }
 
   function updateConfig(patch: Partial<MixProjectConfig>) {
@@ -662,6 +691,10 @@ export default function App() {
             >
               重启安装
             </button>
+            <button className="secondary-inline" type="button" onClick={openReleaseNotes} disabled={!api || releaseNotesLoading}>
+              <FileText size={15} />
+              更新日志
+            </button>
           </div>
         </section>
       </aside>
@@ -990,6 +1023,50 @@ export default function App() {
           </div>
         )}
       </section>
+      {releaseNotesOpen && (
+        <div className="modal-backdrop" onClick={() => setReleaseNotesOpen(false)}>
+          <section
+            className="release-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="release-notes-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="release-modal-head">
+              <div>
+                <span>更新日志</span>
+                <h2 id="release-notes-title">{releaseNotes?.name ?? "正在获取最新版本"}</h2>
+              </div>
+              <button type="button" onClick={() => setReleaseNotesOpen(false)} title="关闭">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="release-meta">
+              <span>当前版本 {updateSnapshot.currentVersion}</span>
+              {releaseNotes && <span>最新版本 {releaseNotes.version}</span>}
+              {releaseNotes?.publishedAt && <span>{formatDateTime(releaseNotes.publishedAt)}</span>}
+            </div>
+            <div className="release-body">
+              {releaseNotesLoading && <p className="muted">正在读取 GitHub 更新日志...</p>}
+              {releaseNotesError && (
+                <div className="notice error">
+                  <AlertTriangle size={18} />
+                  <span>{releaseNotesError}</span>
+                </div>
+              )}
+              {!releaseNotesLoading && !releaseNotesError && <pre>{releaseNotes?.body ?? "暂时没有更新日志。"}</pre>}
+            </div>
+            <footer className="release-modal-actions">
+              <button className="secondary-inline" type="button" onClick={openReleaseNotes} disabled={!api || releaseNotesLoading}>
+                刷新日志
+              </button>
+              <button className="inline-command" type="button" onClick={openReleasePage} disabled={!api || !releaseNotes?.url}>
+                打开发布页
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -1307,6 +1384,18 @@ function indexToSlotName(index: number): string {
 
 function basename(filePath: string): string {
   return filePath.split(/[\\/]/).pop() ?? filePath;
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 function cloudImportStatus(status: number): string {

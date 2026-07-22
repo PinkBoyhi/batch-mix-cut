@@ -101,6 +101,11 @@ jobs:
       - build-mac
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
@@ -116,7 +121,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NOTES="${RELEASE_NOTES:-医博生物混剪工具 ${VERSION}}"
+          NOTES="${RELEASE_NOTES:-}"
+          if [ -z "$NOTES" ]; then
+            PREVIOUS_TAG="$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -n 1 || true)"
+            if [ -n "$PREVIOUS_TAG" ]; then
+              NOTES="$(git log --pretty=format:'- %s' "${PREVIOUS_TAG}..${TAG}")"
+            fi
+          fi
+          NOTES="${NOTES:-医博生物混剪工具 ${VERSION}}"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" release-artifacts/* --clobber --repo "$GITHUB_REPOSITORY"
             gh release edit "$TAG" --title "医博生物混剪工具 ${VERSION}" --notes "$NOTES" --latest --repo "$GITHUB_REPOSITORY"

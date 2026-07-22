@@ -167,9 +167,17 @@ function registerIpc(): void {
     await shell.openPath(targetPath);
   });
 
+  ipcMain.handle("shell:open-external", async (_event, url: string) => {
+    if (!/^https:\/\/github\.com\/PinkBoyhi\/batch-mix-cut\/releases\/?/i.test(url)) {
+      throw new Error("只允许打开本项目的 GitHub 发布页面");
+    }
+    await shell.openExternal(url);
+  });
+
   ipcMain.handle("update:check", async () => updateManager.check());
   ipcMain.handle("update:install", async () => updateManager.quitAndInstall());
   ipcMain.handle("update:get-status", async () => updateManager.getSnapshot());
+  ipcMain.handle("update:get-release-notes", async () => updateManager.getReleaseNotes());
 
   ipcMain.handle("cloud:get-settings", async () => cloudClient.getSettingsView());
   ipcMain.handle("cloud:save-settings", async (_event, settings: CloudSettings) => cloudClient.saveSettings(settings));

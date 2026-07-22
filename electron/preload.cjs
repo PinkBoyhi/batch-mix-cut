@@ -14,9 +14,11 @@ const api = {
   retryFailures: () => ipcRenderer.invoke("job:retry-failures"),
   getJob: () => ipcRenderer.invoke("job:get"),
   revealPath: (targetPath) => ipcRenderer.invoke("shell:reveal-path", targetPath),
+  openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
+  getUpdateReleaseNotes: () => ipcRenderer.invoke("update:get-release-notes"),
   onUpdateStatus: (callback) => {
     const listener = (_event, snapshot) => callback(snapshot);
     ipcRenderer.on("update:status", listener);
