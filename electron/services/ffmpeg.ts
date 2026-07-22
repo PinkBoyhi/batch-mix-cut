@@ -64,12 +64,13 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       const delayMs = Math.max(0, Math.round(bgmRange.offsetSeconds * 1000));
       const bgmGainDb = bgmLoudness?.gainDb ?? 0;
       const bgmFilters = [
+        "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo",
         `atrim=duration=${bgmRange.durationSeconds.toFixed(3)}`,
         "asetpts=PTS-STARTPTS",
         fadeDuration > 0 ? `afade=t=out:st=${fadeStart.toFixed(3)}:d=${fadeDuration.toFixed(3)}` : undefined,
         `volume=${config.bgmVolume}`,
         bgmGainDb !== 0 ? `volume=${bgmGainDb.toFixed(2)}dB` : undefined,
-        `adelay=${delayMs}:all=1`
+        `adelay=${formatStereoDelay(delayMs)}`
       ].filter(Boolean);
       filters.push(`[${bgmInputIndex}:a]${bgmFilters.join(",")}[abgm]`);
       filters.push("[asrc][abgm]amix=inputs=2:duration=first:dropout_transition=0[aout]");
@@ -189,6 +190,11 @@ function clampGain(value: number): number {
     return 0;
   }
   return Math.max(-18, Math.min(18, value));
+}
+
+function formatStereoDelay(delayMs: number): string {
+  const safeDelay = Math.max(0, Math.round(delayMs));
+  return `${safeDelay}|${safeDelay}`;
 }
 
 function evenDimension(value: number): number {
