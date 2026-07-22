@@ -59,9 +59,6 @@ function createWindow(): void {
     if (process.platform === "darwin") {
       app.focus({ steal: true });
     }
-    if (app.isPackaged) {
-      void updateManager.check();
-    }
   });
 }
 

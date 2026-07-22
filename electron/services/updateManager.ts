@@ -34,8 +34,8 @@ export class UpdateManager extends EventEmitter {
     super();
     this.updater = autoUpdater;
     this.packaged = packaged;
-    this.updater.autoDownload = true;
-    this.updater.autoInstallOnAppQuit = true;
+    this.updater.autoDownload = false;
+    this.updater.autoInstallOnAppQuit = false;
     this.snapshot = {
       status: "idle",
       message: "等待检查更新",
@@ -110,7 +110,7 @@ export class UpdateManager extends EventEmitter {
     this.updater.on("update-available", (info: UpdateInfo) => {
       this.setSnapshot({
         status: "available",
-        message: `发现新版本 ${info.version}，正在下载`,
+        message: `发现新版本 ${info.version}，请手动下载`,
         availableVersion: info.version
       });
     });
