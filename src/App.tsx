@@ -15,7 +15,6 @@ import {
   Trash2,
   UploadCloud,
   Video,
-  Wand2,
   X
 } from "lucide-react";
 import type {
@@ -454,10 +453,10 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
-            <Wand2 size={22} />
+            <img src="./logo.png" alt="医博生物" />
           </div>
           <div>
-            <h1>批量混剪工具</h1>
+            <h1>医博生物混剪工具</h1>
             <p>{slotSummary}</p>
           </div>
         </div>

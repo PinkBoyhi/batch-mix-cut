@@ -27,14 +27,18 @@ let mainWindow: BrowserWindow | undefined;
 
 function createWindow(): void {
   const preloadPath = path.join(app.isPackaged ? app.getAppPath() : process.cwd(), "electron", "preload.cjs");
+  const windowIconPath = app.isPackaged
+    ? path.join(process.resourcesPath, "icon.png")
+    : path.join(process.cwd(), "build", "icon.png");
 
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 860,
     minWidth: 760,
     minHeight: 560,
-    title: "批量混剪工具 - 桌面版",
-    backgroundColor: "#f6f4ef",
+    title: "医博生物混剪工具",
+    backgroundColor: "#f5f9ff",
+    icon: windowIconPath,
     show: false,
     webPreferences: {
       preload: preloadPath,

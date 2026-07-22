@@ -1,6 +1,6 @@
 {
   "name": "batch-mix-cut",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "description": "本地批量混剪与剪映草稿替换工具",
@@ -42,19 +42,26 @@
   },
   "build": {
     "appId": "com.local.batchmixcut",
-    "productName": "批量混剪工具",
+    "productName": "医博生物混剪工具",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "build/icon.png",
       "electron/preload.cjs",
       "package.json"
     ],
     "asarUnpack": [
       "node_modules/@ffmpeg-installer/**",
       "node_modules/@ffprobe-installer/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
     ],
     "mac": {
       "category": "public.app-category.video",
@@ -63,6 +70,7 @@
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
