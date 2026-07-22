@@ -1,0 +1,123 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: "发布说明，可留空"
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      tag: ${{ steps.package.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read package version
+        id: package
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    needs: metadata
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows installer
+        run: pnpm exec electron-builder --win --x64 --publish never
+
+      - name: Upload Windows release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            release/*.exe
+            release/latest.yml
+            release/*.exe.blockmap
+
+  build-mac:
+    needs: metadata
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build macOS installer
+        run: pnpm exec electron-builder --mac --arm64 --publish never
+
+      - name: Upload macOS release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-release
+          path: |
+            release/*.dmg
+            release/latest-mac.yml
+            release/*.dmg.blockmap
+
+  publish-release:
+    needs:
+      - metadata
+      - build-windows
+      - build-mac
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_NOTES: ${{ github.event.inputs.release_notes || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES="${RELEASE_NOTES:-医博生物混剪工具 ${VERSION}}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-artifacts/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --title "医博生物混剪工具 ${VERSION}" --notes "$NOTES" --latest --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" release-artifacts/* --title "医博生物混剪工具 ${VERSION}" --notes "$NOTES" --latest --repo "$GITHUB_REPOSITORY"
+          fi

@@ -1,54 +1,24 @@
 # GitHub 管理和发布流程
 
-## 推荐结构
+## GitHub 负责什么
 
-GitHub 负责三件事：
+1. 管代码：功能更新、Bug 修复、版本记录都进仓库。
+2. 打安装包：GitHub Actions 同时生成 Windows 和 macOS 安装包。
+3. 发更新：GitHub Releases 保存安装包和 `latest.yml / latest-mac.yml`，软件从这里检查更新。
 
-1. 管代码：所有功能更新、Bug 修复、版本记录都进仓库。
-2. 打安装包：用 GitHub Actions 在 Windows 环境生成 `.exe`。
-3. 留发布记录：用 GitHub Releases 或独立更新目录保存每个版本的安装包。
-
-自动更新文件仍建议放在一个固定静态地址，例如：
+当前自动更新地址：
 
 ```text
-https://your-domain.com/batch-mix-cut/updates/
+https://github.com/PinkBoyhi/batch-mix-cut/releases/latest/download/
 ```
 
-也可以先用 GitHub Releases 管安装包，但 `electron-updater` 的 generic 更新源最好使用长期固定、可直接访问的静态目录。
-
-## 第一次上传到 GitHub
-
-1. 在 GitHub 新建一个空仓库，例如：
-
-```text
-batch-mix-cut
-```
-
-2. 本地绑定远程仓库：
-
-```bash
-git remote add origin https://github.com/你的用户名/batch-mix-cut.git
-```
-
-3. 提交代码：
-
-```bash
-git add .
-git commit -m "Initial batch mix cut app"
-git branch -M main
-git push -u origin main
-```
-
-如果你用 SSH 地址，把第 2 步换成：
-
-```bash
-git remote add origin git@github.com:你的用户名/batch-mix-cut.git
-```
+如果仓库保持私有，普通用户的软件可能无法直接下载更新文件。要让组员无感更新，建议让 Release 文件公开可访问，或者后续换成对象存储、NAS、Nginx 等固定静态地址。
 
 ## 每次更新功能
 
 1. 改代码。
-2. 本地验证：
+2. 修改 `package.json` 版本号。
+3. 本地验证：
 
 ```bash
 pnpm typecheck
@@ -56,7 +26,7 @@ pnpm test
 pnpm build
 ```
 
-3. 提交：
+4. 提交并推送：
 
 ```bash
 git add .
@@ -64,40 +34,35 @@ git commit -m "描述这次更新"
 git push
 ```
 
-## 发 Windows 新版本
+## 同步发布 Win + Mac
 
-1. 修改 `package.json` 的版本号，例如：
-
-```json
-"version": "0.1.1"
-```
-
-2. 提交并推送：
+推荐用 tag 触发发布：
 
 ```bash
-git add package.json pnpm-lock.yaml
-git commit -m "Release 0.1.1"
-git push
+git tag v0.1.8
+git push origin v0.1.8
 ```
 
-3. 打开 GitHub 仓库的 Actions。
-4. 选择 `Windows Release`。
-5. 点击 `Run workflow`。
-6. 填入自动更新静态目录 URL。
-7. 下载 `windows-release` artifact。
-8. 把里面的这些文件上传到更新目录：
+GitHub Actions 会自动运行 `Desktop Release`，完成后 GitHub Releases 会出现对应版本。
+
+也可以手动打开 GitHub 仓库的 Actions，选择 `Desktop Release`，点击 `Run workflow` 发布当前 `package.json` 版本。
+
+Release 里应包含：
 
 ```text
 *.exe
+*.exe.blockmap
 latest.yml
-*.blockmap
+*.dmg
+*.dmg.blockmap
+latest-mac.yml
 ```
 
-组员打开旧版本软件后，会自动检查到新版本。也可以在软件左侧“更新”区域手动检查。
+其中 Windows 客户端读取 `latest.yml`，macOS 客户端读取 `latest-mac.yml`。
 
 ## 分支建议
 
-- `main`：稳定版本，组员使用的版本从这里发。
+- `main`：稳定版本，组员使用的版本从这里发布。
 - `dev`：日常开发版本，功能没完全稳定前先放这里。
 - `codex/功能名`：让 Codex 修改某个功能时可以临时使用。
 

@@ -1,6 +1,6 @@
 {
   "name": "batch-mix-cut",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "description": "本地批量混剪与剪映草稿替换工具",
@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "dist": "pnpm build && electron-builder",
     "dist:mac": "pnpm build && electron-builder --mac",
+    "dist:mac:arm64": "pnpm build && electron-builder --mac --arm64",
     "dist:win": "pnpm build && electron-builder --win --x64",
     "publish:win": "pnpm build && electron-builder --win --x64 --publish always",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
@@ -91,7 +92,7 @@
     },
     "publish": {
       "provider": "generic",
-      "url": "https://example.com/batch-mix-cut/updates/"
+      "url": "https://github.com/PinkBoyhi/batch-mix-cut/releases/latest/download/"
     }
   }
 }
