@@ -126,6 +126,13 @@ jobs:
         run: |
           set -euo pipefail
           NOTES="${RELEASE_NOTES:-}"
+          if [ -z "$NOTES" ] && [ -f CHANGELOG.md ]; then
+            NOTES="$(awk -v version="$VERSION" '
+              $0 ~ "^##[[:space:]]+v?" version "([[:space:]]|$)" { found = 1; next }
+              found && $0 ~ "^##[[:space:]]+" { exit }
+              found { print }
+            ' CHANGELOG.md | sed '/^[[:space:]]*$/d' || true)"
+          fi
           if [ -z "$NOTES" ]; then
             PREVIOUS_TAG="$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -n 1 || true)"
             if [ -n "$PREVIOUS_TAG" ]; then
