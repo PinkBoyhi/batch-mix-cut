@@ -144,6 +144,7 @@ export default function App() {
     if (config.slots.length === 0) return "还没有段落";
     return config.slots.map((slot) => `${slot.name}:${slot.assets.length}`).join("  ");
   }, [config]);
+  const updateMessage = updateSnapshot.status === "error" || updateSnapshot.error ? "版本号获取失败" : updateSnapshot.message;
 
   async function createProject() {
     if (!api) {
@@ -638,8 +639,7 @@ export default function App() {
           <h2>更新</h2>
           <div className="update-box">
             <span>当前版本 {updateSnapshot.currentVersion}</span>
-            <strong>{updateSnapshot.message}</strong>
-            {updateSnapshot.error && <em>{updateSnapshot.error}</em>}
+            <strong>{updateMessage}</strong>
             {typeof updateSnapshot.progressPercent === "number" && (
               <div className="progress-bar">
                 <div style={{ width: `${Math.round(updateSnapshot.progressPercent)}%` }} />
