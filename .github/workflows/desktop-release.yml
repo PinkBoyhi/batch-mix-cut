@@ -48,7 +48,9 @@ jobs:
         run: corepack enable
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile || (sleep 20 && pnpm install --frozen-lockfile)
 
       - name: Build Windows installer
         run: pnpm build && pnpm exec electron-builder --win --x64 --publish never
@@ -78,7 +80,9 @@ jobs:
         run: corepack enable
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile || (sleep 20 && pnpm install --frozen-lockfile)
 
       - name: Build macOS installer
         env:
