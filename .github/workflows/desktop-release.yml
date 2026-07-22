@@ -95,8 +95,10 @@ jobs:
           name: mac-release
           path: |
             release/*.dmg
+            release/*.zip
             release/latest-mac.yml
             release/*.dmg.blockmap
+            release/*.zip.blockmap
 
   publish-release:
     needs:
