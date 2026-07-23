@@ -77,6 +77,7 @@ export async function scanProject(projectDir: string, templateDraftOverride?: st
       fadeOutSeconds: 2
     },
     maxCombinations: 100,
+    outputNamePattern: "成品",
     exportMode: hasTemplate ? "both" : "video",
     sourceVolume: 1,
     bgmVolume: 1,
@@ -94,7 +95,7 @@ export async function scanProject(projectDir: string, templateDraftOverride?: st
 
   return {
     config,
-    combinations: createCombinations(slots, bgmAssets, outputDir, config.maxCombinations),
+    combinations: createCombinations(slots, bgmAssets, outputDir, config.maxCombinations, config.outputNamePattern),
     warnings
   };
 }

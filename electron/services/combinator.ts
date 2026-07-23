@@ -6,7 +6,8 @@ export function createCombinations(
   slots: SegmentSlot[],
   bgmAssets: AssetInfo[],
   outputDir: string,
-  maxCombinations = Number.POSITIVE_INFINITY
+  maxCombinations = Number.POSITIVE_INFINITY,
+  outputNamePattern = ""
 ): MixCombination[] {
   if (slots.length === 0 || slots.some((slot) => slot.assets.length === 0)) {
     return [];
@@ -28,11 +29,12 @@ export function createCombinations(
       slotAssets[slot.name] = slot.assets[assetIndex];
     }
 
+    const id = `mix_${String(index + 1).padStart(4, "0")}`;
     const sequence = slots
       .map((slot) => safeName(path.parse(slotAssets[slot.name].name).name))
       .join("__");
-    const id = `mix_${String(index + 1).padStart(4, "0")}`;
-    const fileBase = `${id}__${sequence || "untitled"}`;
+    const customBase = buildOutputBaseName(outputNamePattern, index);
+    const fileBase = customBase || `${id}__${sequence || "untitled"}`;
 
     combinations.push({
       id,
@@ -45,4 +47,12 @@ export function createCombinations(
   }
 
   return combinations;
+}
+
+export function buildOutputBaseName(pattern: string | undefined, index: number): string {
+  const base = safeName((pattern ?? "").trim());
+  if (!base) {
+    return "";
+  }
+  return `${base}_${String(index + 1).padStart(3, "0")}`;
 }

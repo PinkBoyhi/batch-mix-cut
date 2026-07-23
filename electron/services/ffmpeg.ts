@@ -1,8 +1,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import crypto from "node:crypto";
+import { createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
+import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import type { AssetInfo, MixCombination, MixProjectConfig } from "../../src/shared/types.js";
 import { describeMissingBinary, getFfmpegPath } from "./ffmpegBinaries.js";
+import { probeAsset } from "./mediaProbe.js";
 
 export interface ExportHandle {
   promise: Promise<void>;
@@ -10,6 +15,7 @@ export interface ExportHandle {
 }
 
 const loudnessCache = new Map<string, Promise<number | undefined>>();
+const mediaMetadataCache = new Map<string, Promise<Partial<AssetInfo>>>();
 
 export function exportVideo(config: MixProjectConfig, combination: MixCombination): ExportHandle {
   let child: ChildProcessWithoutNullStreams | undefined;
@@ -18,7 +24,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
   const promise = (async () => {
     await fs.mkdir(path.dirname(combination.targetVideoPath), { recursive: true });
     const slots = [...config.slots].sort((a, b) => a.sortOrder - b.sortOrder);
-    const videoAssets = slots.map((slot) => combination.slotAssets[slot.name]);
+    const videoAssets = await Promise.all(slots.map((slot) => ensureLocalAsset(combination.slotAssets[slot.name], config.outputDir)));
     const first = videoAssets[0];
     const { width, height } = resolveCanvasSize(config, first);
     const sourceLoudness = await resolveSourceLoudness(videoAssets);
@@ -129,6 +135,108 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       child?.kill("SIGTERM");
     }
   };
+}
+
+async function ensureLocalAsset(asset: AssetInfo, outputDir: string): Promise<AssetInfo> {
+  if (!/^https?:\/\//i.test(asset.path)) {
+    return shouldProbeAsset(asset) ? withProbedMetadata(asset) : asset;
+  }
+
+  const cacheDir = path.join(outputDir, ".cloud-cache");
+  await fs.mkdir(cacheDir, { recursive: true });
+  const cachePath = path.join(cacheDir, `${crypto.createHash("sha1").update(asset.path).digest("hex")}${extensionFromUrl(asset.path)}`);
+  if (!(await exists(cachePath))) {
+    await downloadRemoteAsset(asset.path, cachePath);
+  }
+  return {
+    ...(await withProbedMetadata({ ...asset, path: cachePath }))
+  };
+}
+
+function shouldProbeAsset(asset: AssetInfo): boolean {
+  return asset.kind === "video" && (asset.hasAudio === undefined || asset.durationSeconds === undefined || asset.width === undefined || asset.height === undefined);
+}
+
+async function withProbedMetadata(asset: AssetInfo): Promise<AssetInfo> {
+  const metadata = await getMediaMetadata(asset);
+  return { ...asset, ...metadata };
+}
+
+function getMediaMetadata(asset: AssetInfo): Promise<Partial<AssetInfo>> {
+  const cached = mediaMetadataCache.get(asset.path);
+  if (cached) {
+    return cached;
+  }
+  const promise = probeAsset(asset).then((probed) => ({
+    durationSeconds: probed.durationSeconds,
+    width: probed.width,
+    height: probed.height,
+    hasAudio: probed.hasAudio
+  }));
+  mediaMetadataCache.set(asset.path, promise);
+  return promise;
+}
+
+function extensionFromUrl(urlString: string): string {
+  try {
+    const ext = path.extname(new URL(urlString).pathname).toLowerCase();
+    return ext || ".mp4";
+  } catch {
+    return ".mp4";
+  }
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function downloadRemoteAsset(urlString: string, targetPath: string, redirects = 0): Promise<void> {
+  if (redirects > 5) {
+    throw new Error(`云端素材重定向次数过多：${urlString}`);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const url = new URL(urlString);
+    const request = (url.protocol === "https:" ? https : http).get(
+      url,
+      {
+        headers: {
+          "User-Agent": "YiboBioMixCut/1.0"
+        },
+        timeout: 30000
+      },
+      (response) => {
+        const status = response.statusCode ?? 0;
+        const location = response.headers.location;
+        if (status >= 300 && status < 400 && location) {
+          response.resume();
+          const nextUrl = new URL(location, url).toString();
+          downloadRemoteAsset(nextUrl, targetPath, redirects + 1).then(resolve, reject);
+          return;
+        }
+        if (status < 200 || status >= 300) {
+          response.resume();
+          reject(new Error(`云端素材下载失败：HTTP ${status}，${urlString}`));
+          return;
+        }
+
+        const file = createWriteStream(targetPath);
+        response.pipe(file);
+        file.on("finish", () => file.close(() => resolve()));
+        file.on("error", reject);
+      }
+    );
+    request.on("timeout", () => request.destroy(new Error(`云端素材下载超时：${urlString}`)));
+    request.on("error", (error) => reject(new Error(`云端素材下载失败：${error.message}，${urlString}`)));
+  }).catch(async (error) => {
+    await fs.unlink(targetPath).catch(() => undefined);
+    throw error;
+  });
 }
 
 async function resolveSourceLoudness(videoAssets: AssetInfo[]): Promise<Array<{ meanDb?: number; gainDb: number }>> {

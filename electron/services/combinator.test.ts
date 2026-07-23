@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AssetInfo, SegmentSlot } from "../../src/shared/types.js";
-import { createCombinations } from "./combinator.js";
+import { buildOutputBaseName, createCombinations } from "./combinator.js";
 
 describe("createCombinations", () => {
   it("creates cartesian products and rotates bgm by index", () => {
@@ -41,6 +41,18 @@ describe("createCombinations", () => {
       B: expect.objectContaining({ name: "b2.mp4" }),
       C: expect.objectContaining({ name: "c2.mp4" })
     });
+  });
+
+  it("uses custom output names with padded sequence numbers", () => {
+    const slots: SegmentSlot[] = [{ name: "A", sortOrder: 0, assets: [video("a1.mp4"), video("a2.mp4")] }];
+
+    const combinations = createCombinations(slots, [], "/tmp/out", 2, "成品 视频");
+
+    expect(combinations.map((item) => item.targetVideoPath)).toEqual([
+      "/tmp/out/videos/成品_视频_001.mp4",
+      "/tmp/out/videos/成品_视频_002.mp4"
+    ]);
+    expect(buildOutputBaseName("", 0)).toBe("");
   });
 });
 

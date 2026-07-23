@@ -2,6 +2,8 @@ export type ExportMode = "video" | "draft" | "both";
 
 export type ExportTarget = "local" | "cloud" | "both";
 
+export type CloudVideoRotation = "none" | "clockwise90" | "counterClockwise90" | "rotate180";
+
 export type JobStatus = "idle" | "running" | "paused" | "stopping" | "completed" | "failed";
 
 export type UpdateStatus =
@@ -67,6 +69,7 @@ export interface MixProjectConfig {
   bgmAssets: AssetInfo[];
   bgmRange: BgmSegmentRange;
   maxCombinations: number;
+  outputNamePattern: string;
   exportMode: ExportMode;
   sourceVolume: number;
   bgmVolume: number;
@@ -139,6 +142,10 @@ export interface CloudSettings {
   companyKey: string;
   companySecret?: string;
   accountKey: string;
+  accountName?: string;
+  accountLogin?: string;
+  uploadBaseUrl?: string;
+  uploadToken?: string;
 }
 
 export interface CloudSettingsView {
@@ -146,6 +153,10 @@ export interface CloudSettingsView {
   companyKey: string;
   hasCompanySecret: boolean;
   accountKey: string;
+  accountName?: string;
+  accountLogin?: string;
+  uploadBaseUrl: string;
+  hasUploadToken: boolean;
 }
 
 export interface CloudAccount {
@@ -225,6 +236,17 @@ export interface CloudImportVideo {
   thirdId?: string;
 }
 
+export interface CloudLocalUploadVideo {
+  localPath: string;
+  videoName: string;
+  videoType: number;
+  twoLevelTypeId: number;
+  labelIds: string;
+  videoRight: number;
+  rotation?: CloudVideoRotation;
+  thirdId?: string;
+}
+
 export interface CloudImportJob {
   requestId: string;
   errorList: Array<{
@@ -232,6 +254,15 @@ export interface CloudImportJob {
     videoName?: string;
     errors?: Array<{ field: string; message: string }>;
   }>;
+}
+
+export interface CloudLocalUploadJob {
+  uploaded: Array<{
+    localPath: string;
+    videoName: string;
+    url: string;
+  }>;
+  importJob: CloudImportJob;
 }
 
 export interface CloudImportResult {
@@ -244,6 +275,7 @@ export interface CloudImportResult {
 export interface AppApi {
   selectDirectory: () => Promise<string | undefined>;
   selectFiles: (kind: AssetKind) => Promise<string[]>;
+  selectVideoFolderFiles: () => Promise<string[]>;
   probeFiles: (filePaths: string[], kind: AssetKind) => Promise<AssetInfo[]>;
   createManualProject: (outputDir: string) => Promise<ScanResult>;
   buildCombinations: (config: MixProjectConfig) => Promise<MixCombination[]>;
@@ -264,7 +296,8 @@ export interface AppApi {
   getCloudSettings: () => Promise<CloudSettingsView>;
   saveCloudSettings: (settings: CloudSettings) => Promise<CloudSettingsView>;
   testCloudConnection: () => Promise<{ ok: true }>;
-  listCloudAccounts: (pageNo?: number, pageSize?: number) => Promise<CloudPage<CloudAccount>>;
+  captureCloudUploadToken: (loginUrl?: string) => Promise<CloudSettingsView>;
+  verifyCloudPhone: (phone: string) => Promise<CloudSettingsView>;
   listCloudVideos: (query: CloudVideoListQuery) => Promise<CloudPage<CloudVideo>>;
   listCloudVideoTypes: (videoType?: number) => Promise<CloudVideoType[]>;
   listCloudVideoLabels: (query?: {
@@ -274,6 +307,7 @@ export interface AppApi {
   }) => Promise<CloudVideoLabel[]>;
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => Promise<string>;
   importCloudVideos: (videos: CloudImportVideo[]) => Promise<CloudImportJob>;
+  uploadCloudLocalVideos: (videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
   queryCloudImportResult: (
     requestId: string,
     pageNo?: number,

@@ -30,7 +30,13 @@ export class JobManager extends EventEmitter {
     }
 
     this.config = config;
-    this.combinations = createCombinations(config.slots, config.bgmAssets, config.outputDir, config.maxCombinations ?? 100);
+    this.combinations = createCombinations(
+      config.slots,
+      config.bgmAssets,
+      config.outputDir,
+      config.maxCombinations ?? 100,
+      config.outputNamePattern
+    );
     this.failedCombinationIds.clear();
     this.stopped = false;
     this.paused = false;

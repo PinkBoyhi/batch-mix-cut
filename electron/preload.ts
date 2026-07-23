@@ -3,6 +3,7 @@ import type {
   AppApi,
   BatchJobSnapshot,
   CloudImportVideo,
+  CloudLocalUploadVideo,
   CloudSettings,
   CloudVideoListQuery,
   MixProjectConfig,
@@ -12,6 +13,7 @@ import type {
 const api: AppApi = {
   selectDirectory: () => ipcRenderer.invoke("dialog:select-directory"),
   selectFiles: (kind) => ipcRenderer.invoke("dialog:select-files", kind),
+  selectVideoFolderFiles: () => ipcRenderer.invoke("dialog:select-video-folder-files"),
   probeFiles: (filePaths, kind) => ipcRenderer.invoke("assets:probe-files", filePaths, kind),
   createManualProject: (outputDir) => ipcRenderer.invoke("project:create-manual", outputDir),
   buildCombinations: (config) => ipcRenderer.invoke("project:build-combinations", config),
@@ -36,13 +38,15 @@ const api: AppApi = {
   getCloudSettings: () => ipcRenderer.invoke("cloud:get-settings"),
   saveCloudSettings: (settings: CloudSettings) => ipcRenderer.invoke("cloud:save-settings", settings),
   testCloudConnection: () => ipcRenderer.invoke("cloud:test-connection"),
-  listCloudAccounts: (pageNo?: number, pageSize?: number) => ipcRenderer.invoke("cloud:list-accounts", pageNo, pageSize),
+  captureCloudUploadToken: (loginUrl?: string) => ipcRenderer.invoke("cloud:capture-upload-token", loginUrl),
+  verifyCloudPhone: (phone: string) => ipcRenderer.invoke("cloud:verify-phone", phone),
   listCloudVideos: (query: CloudVideoListQuery) => ipcRenderer.invoke("cloud:list-videos", query),
   listCloudVideoTypes: (videoType?: number) => ipcRenderer.invoke("cloud:list-video-types", videoType),
   listCloudVideoLabels: (query?: { oneLevelTypeId?: number; twoLevelTypeIds?: string; videoType?: number }) =>
     ipcRenderer.invoke("cloud:list-video-labels", query),
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => ipcRenderer.invoke("cloud:get-raw-url", videoId, isInner),
   importCloudVideos: (videos: CloudImportVideo[]) => ipcRenderer.invoke("cloud:import-videos", videos),
+  uploadCloudLocalVideos: (videos: CloudLocalUploadVideo[]) => ipcRenderer.invoke("cloud:upload-local-videos", videos),
   queryCloudImportResult: (requestId: string, pageNo?: number, pageSize?: number) =>
     ipcRenderer.invoke("cloud:query-import-result", requestId, pageNo, pageSize),
   onJobUpdate: (callback: (snapshot: BatchJobSnapshot) => void) => {
