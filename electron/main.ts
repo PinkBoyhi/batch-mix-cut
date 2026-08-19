@@ -242,6 +242,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("update:check", async () => updateManager.check());
+  ipcMain.handle("update:download", async () => updateManager.download());
   ipcMain.handle("update:install", async () => updateManager.quitAndInstall());
   ipcMain.handle("update:get-status", async () => updateManager.getSnapshot());
   ipcMain.handle("update:get-release-notes", async () => updateManager.getReleaseNotes());

@@ -410,12 +410,17 @@ export default function App() {
     await api.installUpdate();
   }
 
-  async function openLatestReleasePage() {
+  async function downloadUpdate() {
     if (!api) return;
     try {
-      await api.openExternal("https://github.com/PinkBoyhi/batch-mix-cut/releases/latest");
+      setUpdateSnapshot(await api.downloadUpdate());
     } catch (err) {
-      setError(toMessage(err));
+      setUpdateSnapshot((current) => ({
+        ...current,
+        status: "error",
+        message: "更新下载失败",
+        error: toMessage(err)
+      }));
     }
   }
 
@@ -1113,10 +1118,10 @@ export default function App() {
             <button
               className="inline-command"
               type="button"
-              onClick={openLatestReleasePage}
-              disabled={!api || updateSnapshot.status !== "available"}
+              onClick={updateSnapshot.status === "downloaded" ? installUpdate : downloadUpdate}
+              disabled={!api || (updateSnapshot.status !== "available" && updateSnapshot.status !== "downloaded")}
             >
-              下载新版
+              {updateSnapshot.status === "downloaded" ? "重启安装" : "下载新版"}
             </button>
             <button className="secondary-inline" type="button" onClick={openReleaseNotes} disabled={!api || releaseNotesLoading}>
               <FileText size={15} />

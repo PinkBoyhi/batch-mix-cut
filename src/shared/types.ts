@@ -308,6 +308,7 @@ export interface AppApi {
   revealPath: (targetPath: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   checkForUpdates: () => Promise<UpdateSnapshot>;
+  downloadUpdate: () => Promise<UpdateSnapshot>;
   installUpdate: () => Promise<void>;
   getUpdateStatus: () => Promise<UpdateSnapshot>;
   getUpdateReleaseNotes: () => Promise<UpdateReleaseNotes>;

@@ -68,6 +68,29 @@ export class UpdateManager extends EventEmitter {
     return this.getSnapshot();
   }
 
+  async download(): Promise<UpdateSnapshot> {
+    if (!this.packaged) {
+      this.setSnapshot({
+        status: "error",
+        message: "开发模式不能下载更新"
+      });
+      return this.getSnapshot();
+    }
+
+    if (this.snapshot.status !== "available") {
+      return this.getSnapshot();
+    }
+
+    this.setSnapshot({
+      status: "downloading",
+      message: "正在下载更新",
+      progressPercent: 0,
+      error: undefined
+    });
+    await this.updater.downloadUpdate();
+    return this.getSnapshot();
+  }
+
   async getReleaseNotes(): Promise<UpdateReleaseNotes> {
     const response = await fetch(latestReleaseApiUrl, {
       headers: {

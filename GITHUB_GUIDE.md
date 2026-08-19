@@ -4,7 +4,7 @@
 
 1. 管代码：功能更新、Bug 修复、版本记录都进仓库。
 2. 打安装包：GitHub Actions 同时生成 Windows 和 macOS 安装包。
-3. 发更新：GitHub Releases 保存安装包和 `latest.yml / latest-mac.yml`，软件从这里检查更新。
+3. 发更新：GitHub Releases 保存安装包和 `latest.yml / latest-mac.yml`，软件从这里检查、下载和安装更新。
 
 当前自动更新地址：
 
@@ -58,7 +58,7 @@ latest.yml
 latest-mac.yml
 ```
 
-其中 Windows 客户端读取 `latest.yml`，macOS 客户端读取 `latest-mac.yml`。
+其中 Windows 客户端读取 `latest.yml`，macOS 客户端读取 `latest-mac.yml`。软件内点击“下载新版”会直接下载更新，完成后点击“重启安装”。
 
 ## 分支建议
 
