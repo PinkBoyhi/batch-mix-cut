@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { AssetInfo, MixCombination, SegmentSlot } from "../../src/shared/types.js";
+import type { AssetInfo, BgmTrack, MixCombination, MixCombinationBgmTrack, SegmentSlot } from "../../src/shared/types.js";
 import { safeName } from "../utils/path.js";
 
 export function createCombinations(
@@ -7,7 +7,8 @@ export function createCombinations(
   bgmAssets: AssetInfo[],
   outputDir: string,
   maxCombinations = Number.POSITIVE_INFINITY,
-  outputNamePattern = ""
+  outputNamePattern = "",
+  bgmTracks: BgmTrack[] = []
 ): MixCombination[] {
   if (slots.length === 0 || slots.some((slot) => slot.assets.length === 0)) {
     return [];
@@ -35,18 +36,46 @@ export function createCombinations(
       .join("__");
     const customBase = buildOutputBaseName(outputNamePattern, index);
     const fileBase = customBase || `${id}__${sequence || "untitled"}`;
+    const selectedBgmTracks = selectBgmTracks(bgmTracks, bgmAssets, index);
 
     combinations.push({
       id,
       index,
       slotAssets,
-      bgm: bgmAssets.length > 0 ? bgmAssets[index % bgmAssets.length] : undefined,
+      bgm: selectedBgmTracks[0]?.asset,
+      bgmTracks: selectedBgmTracks,
       targetVideoPath: path.join(outputDir, "videos", `${fileBase}.mp4`),
       targetDraftPath: path.join(outputDir, "jianying-drafts", fileBase)
     });
   }
 
   return combinations;
+}
+
+function selectBgmTracks(bgmTracks: BgmTrack[], legacyAssets: AssetInfo[], index: number): MixCombinationBgmTrack[] {
+  const tracks = bgmTracks.length > 0 ? bgmTracks : legacyAssets.length > 0 ? [legacyTrack(legacyAssets)] : [];
+  return tracks
+    .filter((track) => track.assets.length > 0)
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .map((track) => ({
+      id: track.id,
+      name: track.name,
+      asset: track.assets[index % track.assets.length],
+      range: track.range
+    }));
+}
+
+function legacyTrack(assets: AssetInfo[]): BgmTrack {
+  return {
+    id: "bgm_1",
+    name: "BGM 1",
+    assets,
+    range: {
+      fadeInSeconds: 0,
+      fadeOutSeconds: 2
+    },
+    sortOrder: 0
+  };
 }
 
 export function buildOutputBaseName(pattern: string | undefined, index: number): string {

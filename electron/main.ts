@@ -43,10 +43,12 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 function createWindow(): void {
-  const preloadPath = path.join(app.isPackaged ? app.getAppPath() : process.cwd(), "electron", "preload.cjs");
+  // 开发版不能依赖 process.cwd()：macOS 用系统 open 启动时工作目录可能不是项目根目录。
+  const appRoot = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, "../..");
+  const preloadPath = path.join(appRoot, "electron", "preload.cjs");
   const windowIconPath = app.isPackaged
     ? path.join(process.resourcesPath, "icon.png")
-    : path.join(process.cwd(), "build", "icon.png");
+    : path.join(appRoot, "build", "icon.png");
 
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -169,13 +171,27 @@ function registerIpc(): void {
       slots: [],
       bgmAssets: [],
       bgmRange: {
+        fadeInSeconds: 0,
         fadeOutSeconds: 2
       },
+      bgmTracks: [
+        {
+          id: "bgm_1",
+          name: "BGM 1",
+          assets: [],
+          range: {
+            fadeInSeconds: 0,
+            fadeOutSeconds: 2
+          },
+          sortOrder: 0
+        }
+      ],
       maxCombinations: 100,
       outputNamePattern: "成品",
       exportMode: "video",
       sourceVolume: 1,
       bgmVolume: 1,
+      normalizeLoudness: true,
       videoProfile: {
         codec: "h264",
         audioCodec: "aac",
@@ -195,7 +211,8 @@ function registerIpc(): void {
       config.bgmAssets,
       config.outputDir,
       config.maxCombinations ?? 100,
-      config.outputNamePattern
+      config.outputNamePattern,
+      config.bgmTracks
     );
   });
 

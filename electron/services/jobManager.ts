@@ -35,7 +35,8 @@ export class JobManager extends EventEmitter {
       config.bgmAssets,
       config.outputDir,
       config.maxCombinations ?? 100,
-      config.outputNamePattern
+      config.outputNamePattern,
+      config.bgmTracks
     );
     this.failedCombinationIds.clear();
     this.stopped = false;

@@ -18,11 +18,13 @@ import {
   Trash2,
   UploadCloud,
   Video,
+  Zap,
   X
 } from "lucide-react";
 import type {
   AssetInfo,
   BatchJobSnapshot,
+  BgmTrack,
   CloudImportJob,
   CloudImportResult,
   CloudImportVideo,
@@ -212,6 +214,7 @@ export default function App() {
 
   const progress = job.total > 0 ? Math.round(((job.completed + job.failed) / job.total) * 100) : 0;
   const canStart = !!config && combinations.length > 0 && job.status !== "running" && job.status !== "paused";
+  const speedModeEnabled = Boolean(config && config.normalizeLoudness === false && config.videoProfile.preset === "veryfast");
   const slotSummary = useMemo(() => {
     if (!config) return "未创建项目";
     if (config.slots.length === 0) return "还没有段落";
@@ -303,7 +306,34 @@ export default function App() {
     }
   }
 
-  async function addBgmAssets() {
+  async function addBgmTrack() {
+    if (!config) return;
+    const tracks = normalizeBgmTracks(config);
+    const nextIndex = tracks.length;
+    await applyConfig({
+      ...config,
+      bgmTracks: [
+        ...tracks,
+        {
+          id: `bgm_${Date.now()}`,
+          name: `BGM ${nextIndex + 1}`,
+          assets: [],
+          range: defaultBgmRange(config),
+          sortOrder: nextIndex
+        }
+      ]
+    });
+  }
+
+  async function removeBgmTrack(trackId: string) {
+    if (!config) return;
+    const tracks = normalizeBgmTracks(config)
+      .filter((track) => track.id !== trackId)
+      .map((track, index) => ({ ...track, name: `BGM ${index + 1}`, sortOrder: index }));
+    await applyConfig({ ...config, bgmTracks: tracks, bgmAssets: tracks[0]?.assets ?? [], bgmRange: tracks[0]?.range ?? defaultBgmRange(config) });
+  }
+
+  async function addBgmAssets(trackId: string) {
     if (!api || !config) return;
     setBusy(true);
     setError(undefined);
@@ -311,7 +341,10 @@ export default function App() {
       const files = await api.selectFiles("audio");
       if (files.length === 0) return;
       const assets = await api.probeFiles(files, "audio");
-      await applyConfig({ ...config, bgmAssets: mergeAssets(config.bgmAssets, assets) });
+      const tracks = normalizeBgmTracks(config).map((track) =>
+        track.id === trackId ? { ...track, assets: mergeAssets(track.assets, assets) } : track
+      );
+      await applyConfig({ ...config, bgmTracks: tracks, bgmAssets: tracks[0]?.assets ?? [], bgmRange: tracks[0]?.range ?? defaultBgmRange(config) });
     } catch (err) {
       setError(toMessage(err));
     } finally {
@@ -327,9 +360,12 @@ export default function App() {
     await applyConfig({ ...config, slots: nextSlots });
   }
 
-  async function removeBgm(assetId: string) {
+  async function removeBgm(trackId: string, assetId: string) {
     if (!config) return;
-    await applyConfig({ ...config, bgmAssets: config.bgmAssets.filter((asset) => asset.id !== assetId) });
+    const tracks = normalizeBgmTracks(config).map((track) =>
+      track.id === trackId ? { ...track, assets: track.assets.filter((asset) => asset.id !== assetId) } : track
+    );
+    await applyConfig({ ...config, bgmTracks: tracks, bgmAssets: tracks[0]?.assets ?? [], bgmRange: tracks[0]?.range ?? defaultBgmRange(config) });
   }
 
   async function startJob() {
@@ -409,6 +445,17 @@ export default function App() {
   function updateConfig(patch: Partial<MixProjectConfig>) {
     if (!config) return;
     void applyConfig({ ...config, ...patch });
+  }
+
+  function toggleSpeedMode() {
+    if (!config) return;
+    updateConfig({
+      normalizeLoudness: speedModeEnabled,
+      videoProfile: {
+        ...config.videoProfile,
+        preset: speedModeEnabled ? "fast" : "veryfast"
+      }
+    });
   }
 
   async function testCloudConnection() {
@@ -971,6 +1018,16 @@ export default function App() {
               <strong>{Math.round(config.bgmVolume * 100)}%</strong>
             </label>
 
+            <button
+              className={speedModeEnabled ? "inline-command speed-mode-button" : "secondary-inline speed-mode-button"}
+              type="button"
+              onClick={toggleSpeedMode}
+              aria-pressed={speedModeEnabled}
+            >
+              <Zap size={16} />
+              <span>{speedModeEnabled ? "恢复标准" : "极速模式"}</span>
+            </button>
+
             <div className="path-line">
               <span>输出</span>
               <button type="button" onClick={() => void api?.revealPath(config.outputDir)} disabled={!api}>
@@ -1140,12 +1197,58 @@ export default function App() {
 
             <section className="panel wide">
               <h2>BGM 素材</h2>
-              <button className="inline-command" type="button" onClick={addBgmAssets}>
-                <Music size={16} />
-                <span>添加 BGM</span>
+              <button className="inline-command" type="button" onClick={addBgmTrack}>
+                <ListPlus size={16} />
+                <span>添加 BGM 轨道</span>
               </button>
-              <AssetChips assets={config.bgmAssets} onRemove={(assetId) => void removeBgm(assetId)} />
-              <BgmRangeControls config={config} onChange={updateConfig} />
+              <label className="toggle-field bgm-toggle">
+                <input
+                  type="checkbox"
+                  checked={config.normalizeLoudness !== false}
+                  onChange={(event) => updateConfig({ normalizeLoudness: event.target.checked })}
+                />
+                <span>统一响度</span>
+              </label>
+              <div className="bgm-track-list">
+                {normalizeBgmTracks(config).map((track) => (
+                  <div className="bgm-track-card" key={track.id}>
+                    <div className="slot-head">
+                      <div>
+                        <strong>{track.name}</strong>
+                        <span>{track.assets.length} 个候选音乐</span>
+                      </div>
+                      <div className="row-actions">
+                        <button type="button" onClick={() => void addBgmAssets(track.id)} title="添加音乐">
+                          <Music size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void removeBgmTrack(track.id)}
+                          disabled={normalizeBgmTracks(config).length <= 1}
+                          title="删除 BGM 轨道"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                    <AssetChips assets={track.assets} onRemove={(assetId) => void removeBgm(track.id, assetId)} />
+                    <BgmRangeControls
+                      config={config}
+                      range={track.range}
+                      onChange={(range) => {
+                        const tracks = normalizeBgmTracks(config).map((currentTrack) =>
+                          currentTrack.id === track.id ? { ...currentTrack, range } : currentTrack
+                        );
+                        updateConfig({
+                          bgmTracks: tracks,
+                          bgmAssets: tracks[0]?.assets ?? [],
+                          bgmRange: tracks[0]?.range ?? defaultBgmRange(config)
+                        });
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
             </section>
 
             <section className="panel full">
@@ -2047,7 +2150,7 @@ function CombinationTable({
                   .map(([slot, asset]) => `${slot}:${asset.name}`)
                   .join("  ")}
               </td>
-              <td>{combination.bgm?.name ?? "无"}</td>
+              <td>{formatCombinationBgms(combination)}</td>
               <td>
                 <div className="table-action-cell">
                   <span>{basename(combination.targetVideoPath)}</span>
@@ -2224,14 +2327,16 @@ function mergeAssets(current: AssetInfo[], next: AssetInfo[]): AssetInfo[] {
 
 function BgmRangeControls({
   config,
+  range,
   onChange
 }: {
   config: MixProjectConfig;
-  onChange: (patch: Partial<MixProjectConfig>) => void;
+  range: MixProjectConfig["bgmRange"];
+  onChange: (range: MixProjectConfig["bgmRange"]) => void;
 }) {
   const slotOptions = config.slots.map((slot) => slot.name);
-  const startSlotName = config.bgmRange.startSlotName ?? slotOptions[0] ?? "";
-  const endSlotName = config.bgmRange.endSlotName ?? slotOptions.at(-1) ?? "";
+  const startSlotName = range.startSlotName ?? slotOptions[0] ?? "";
+  const endSlotName = range.endSlotName ?? slotOptions.at(-1) ?? "";
 
   if (slotOptions.length === 0) {
     return null;
@@ -2244,12 +2349,12 @@ function BgmRangeControls({
         <select
           value={startSlotName}
           onChange={(event) =>
-            onChange({
-              bgmRange: normalizeRangeValue(config, {
-                ...config.bgmRange,
+            onChange(
+              normalizeRangeValue(config, {
+                ...range,
                 startSlotName: event.target.value
               })
-            })
+            )
           }
         >
           {slotOptions.map((slotName) => (
@@ -2264,12 +2369,12 @@ function BgmRangeControls({
         <select
           value={endSlotName}
           onChange={(event) =>
-            onChange({
-              bgmRange: normalizeRangeValue(config, {
-                ...config.bgmRange,
+            onChange(
+              normalizeRangeValue(config, {
+                ...range,
                 endSlotName: event.target.value
               })
-            })
+            )
           }
         >
           {slotOptions.map((slotName) => (
@@ -2280,20 +2385,38 @@ function BgmRangeControls({
         </select>
       </label>
       <label>
+        <span>缓入秒数</span>
+        <input
+          type="number"
+          min="0"
+          max="10"
+          step="0.5"
+          value={range.fadeInSeconds ?? 0}
+          onChange={(event) =>
+            onChange(
+              normalizeRangeValue(config, {
+                ...range,
+                fadeInSeconds: Math.max(0, Number(event.target.value))
+              })
+            )
+          }
+        />
+      </label>
+      <label>
         <span>缓出秒数</span>
         <input
           type="number"
           min="0"
           max="10"
           step="0.5"
-          value={config.bgmRange.fadeOutSeconds}
+          value={range.fadeOutSeconds ?? 2}
           onChange={(event) =>
-            onChange({
-              bgmRange: {
-                ...config.bgmRange,
+            onChange(
+              normalizeRangeValue(config, {
+                ...range,
                 fadeOutSeconds: Math.max(0, Number(event.target.value))
-              }
-            })
+              })
+            )
           }
         />
       </label>
@@ -2302,16 +2425,59 @@ function BgmRangeControls({
 }
 
 function normalizeBgmRange(config: MixProjectConfig): MixProjectConfig {
+  const bgmTracks = normalizeBgmTracks(config).map((track, index) => ({
+    ...track,
+    name: `BGM ${index + 1}`,
+    sortOrder: index,
+    range: normalizeRangeValue(config, track.range)
+  }));
   return {
     ...config,
-    bgmRange: normalizeRangeValue(config, config.bgmRange)
+    bgmTracks,
+    bgmAssets: bgmTracks[0]?.assets ?? [],
+    bgmRange: bgmTracks[0]?.range ?? normalizeRangeValue(config, config.bgmRange ?? defaultBgmRange(config))
+  };
+}
+
+function normalizeBgmTracks(config: MixProjectConfig): BgmTrack[] {
+  const tracks = config.bgmTracks && config.bgmTracks.length > 0 ? config.bgmTracks : [];
+  if (tracks.length > 0) {
+    return tracks.map((track, index) => ({
+      ...track,
+      id: track.id || `bgm_${index + 1}`,
+      name: track.name || `BGM ${index + 1}`,
+      assets: track.assets ?? [],
+      range: track.range ?? config.bgmRange ?? defaultBgmRange(config),
+      sortOrder: track.sortOrder ?? index
+    }));
+  }
+  return [
+    {
+      id: "bgm_1",
+      name: "BGM 1",
+      assets: config.bgmAssets ?? [],
+      range: config.bgmRange ?? defaultBgmRange(config),
+      sortOrder: 0
+    }
+  ];
+}
+
+function defaultBgmRange(config: MixProjectConfig): MixProjectConfig["bgmRange"] {
+  return {
+    startSlotName: config.slots[0]?.name,
+    endSlotName: config.slots.at(-1)?.name,
+    fadeInSeconds: 0,
+    fadeOutSeconds: 2
   };
 }
 
 function normalizeRangeValue(config: MixProjectConfig, range: MixProjectConfig["bgmRange"]): MixProjectConfig["bgmRange"] {
   const slotNames = config.slots.map((slot) => slot.name);
   if (slotNames.length === 0) {
-    return { fadeOutSeconds: Math.max(0, range.fadeOutSeconds ?? 2) };
+    return {
+      fadeInSeconds: Math.max(0, range.fadeInSeconds ?? 0),
+      fadeOutSeconds: Math.max(0, range.fadeOutSeconds ?? 2)
+    };
   }
 
   const startSlotName = slotNames.includes(range.startSlotName ?? "") ? range.startSlotName : slotNames[0];
@@ -2325,6 +2491,7 @@ function normalizeRangeValue(config: MixProjectConfig, range: MixProjectConfig["
   return {
     startSlotName,
     endSlotName,
+    fadeInSeconds: Math.max(0, range.fadeInSeconds ?? 0),
     fadeOutSeconds: Math.max(0, range.fadeOutSeconds ?? 2)
   };
 }
@@ -2336,6 +2503,13 @@ function indexToSlotName(index: number): string {
 
 function basename(filePath: string): string {
   return filePath.split(/[\\/]/).pop() ?? filePath;
+}
+
+function formatCombinationBgms(combination: MixCombination): string {
+  if (combination.bgmTracks && combination.bgmTracks.length > 0) {
+    return combination.bgmTracks.map((track) => `${track.name}:${track.asset.name}`).join("  ");
+  }
+  return combination.bgm?.name ?? "无";
 }
 
 function dirname(filePath: string): string {

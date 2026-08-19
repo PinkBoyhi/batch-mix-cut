@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AssetInfo, SegmentSlot } from "../../src/shared/types.js";
+import type { AssetInfo, BgmTrack, SegmentSlot } from "../../src/shared/types.js";
 import { buildOutputBaseName, createCombinations } from "./combinator.js";
 
 describe("createCombinations", () => {
@@ -24,6 +24,22 @@ describe("createCombinations", () => {
     expect(combinations.map((item) => item.slotAssets.A.name)).toEqual(["a1.mp4", "a1.mp4", "a2.mp4", "a2.mp4"]);
     expect(combinations.map((item) => item.slotAssets.B.name)).toEqual(["b1.mp4", "b2.mp4", "b1.mp4", "b2.mp4"]);
     expect(combinations.map((item) => item.bgm?.name)).toEqual(["m1.mp3", "m2.mp3", "m1.mp3", "m2.mp3"]);
+  });
+
+  it("selects one candidate from every bgm track", () => {
+    const slots: SegmentSlot[] = [{ name: "A", sortOrder: 0, assets: [video("a1.mp4"), video("a2.mp4")] }];
+    const bgmTracks: BgmTrack[] = [
+      bgmTrack("bgm_1", 0, [audio("m1.mp3"), audio("m2.mp3")]),
+      bgmTrack("bgm_2", 1, [audio("n1.mp3"), audio("n2.mp3")])
+    ];
+
+    const combinations = createCombinations(slots, [], "/tmp/out", 2, "", bgmTracks);
+
+    expect(combinations.map((item) => item.bgmTracks?.map((track) => track.asset.name))).toEqual([
+      ["m1.mp3", "n1.mp3"],
+      ["m2.mp3", "n2.mp3"]
+    ]);
+    expect(combinations.map((item) => item.bgm?.name)).toEqual(["m1.mp3", "m2.mp3"]);
   });
 
   it("limits generated combinations before expanding large batches", () => {
@@ -73,5 +89,18 @@ function audio(name: string): AssetInfo {
     path: `/tmp/${name}`,
     name,
     kind: "audio"
+  };
+}
+
+function bgmTrack(id: string, sortOrder: number, assets: AssetInfo[]): BgmTrack {
+  return {
+    id,
+    name: `BGM ${sortOrder + 1}`,
+    assets,
+    range: {
+      fadeInSeconds: 1,
+      fadeOutSeconds: 2
+    },
+    sortOrder
   };
 }

@@ -74,13 +74,29 @@ export async function scanProject(projectDir: string, templateDraftOverride?: st
     bgmRange: {
       startSlotName: slots[0]?.name,
       endSlotName: slots.at(-1)?.name,
+      fadeInSeconds: 0,
       fadeOutSeconds: 2
     },
+    bgmTracks: [
+      {
+        id: "bgm_1",
+        name: "BGM 1",
+        assets: bgmAssets,
+        range: {
+          startSlotName: slots[0]?.name,
+          endSlotName: slots.at(-1)?.name,
+          fadeInSeconds: 0,
+          fadeOutSeconds: 2
+        },
+        sortOrder: 0
+      }
+    ],
     maxCombinations: 100,
     outputNamePattern: "成品",
     exportMode: hasTemplate ? "both" : "video",
     sourceVolume: 1,
     bgmVolume: 1,
+    normalizeLoudness: true,
     videoProfile: {
       codec: "h264",
       audioCodec: "aac",
@@ -95,7 +111,7 @@ export async function scanProject(projectDir: string, templateDraftOverride?: st
 
   return {
     config,
-    combinations: createCombinations(slots, bgmAssets, outputDir, config.maxCombinations, config.outputNamePattern),
+    combinations: createCombinations(slots, bgmAssets, outputDir, config.maxCombinations, config.outputNamePattern, config.bgmTracks),
     warnings
   };
 }

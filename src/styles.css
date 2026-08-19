@@ -232,6 +232,31 @@ button:disabled {
   color: #143456;
 }
 
+.toggle-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  margin-top: 8px;
+  color: #365372;
+  font-size: 13px;
+}
+
+.toggle-field input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #1769e0;
+}
+
+.bgm-toggle {
+  margin: 12px 0 4px;
+}
+
+.speed-mode-button {
+  margin: 8px 0 2px;
+}
+
 .path-line {
   display: grid;
   gap: 8px;
@@ -409,13 +434,15 @@ button:disabled {
 .slot-list,
 .draft-slot-list,
 .manual-slot-list,
+.bgm-track-list,
 .music-list,
 .failure-list {
   display: grid;
   gap: 10px;
 }
 
-.manual-slot {
+.manual-slot,
+.bgm-track-card {
   display: grid;
   gap: 12px;
   padding: 14px;
@@ -523,7 +550,7 @@ button:disabled {
 
 .bgm-range {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   margin-top: 14px;
 }
@@ -1463,6 +1490,7 @@ textarea:focus {
 
 .stat,
 .manual-slot,
+.bgm-track-card,
 .draft-slot,
 .slot-row,
 .rule-list span,

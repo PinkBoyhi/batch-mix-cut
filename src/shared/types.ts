@@ -51,7 +51,7 @@ export interface JianyingDraftSlot {
 export interface VideoProfile {
   codec: "h264";
   audioCodec: "aac";
-  preset: "fast" | "medium" | "slow";
+  preset: "veryfast" | "fast" | "medium" | "slow";
   crf: number;
   canvasMode: "original" | "vertical_9_16" | "horizontal_16_9";
 }
@@ -59,7 +59,16 @@ export interface VideoProfile {
 export interface BgmSegmentRange {
   startSlotName?: string;
   endSlotName?: string;
+  fadeInSeconds: number;
   fadeOutSeconds: number;
+}
+
+export interface BgmTrack {
+  id: string;
+  name: string;
+  assets: AssetInfo[];
+  range: BgmSegmentRange;
+  sortOrder: number;
 }
 
 export interface MixProjectConfig {
@@ -68,11 +77,13 @@ export interface MixProjectConfig {
   slots: SegmentSlot[];
   bgmAssets: AssetInfo[];
   bgmRange: BgmSegmentRange;
+  bgmTracks: BgmTrack[];
   maxCombinations: number;
   outputNamePattern: string;
   exportMode: ExportMode;
   sourceVolume: number;
   bgmVolume: number;
+  normalizeLoudness: boolean;
   videoProfile: VideoProfile;
   exportTarget: ExportTarget;
   templateDraftPath?: string;
@@ -84,8 +95,16 @@ export interface MixCombination {
   index: number;
   slotAssets: Record<string, AssetInfo>;
   bgm?: AssetInfo;
+  bgmTracks?: MixCombinationBgmTrack[];
   targetVideoPath: string;
   targetDraftPath: string;
+}
+
+export interface MixCombinationBgmTrack {
+  id: string;
+  name: string;
+  asset: AssetInfo;
+  range: BgmSegmentRange;
 }
 
 export interface JobFailure {

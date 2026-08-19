@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
-import type { AssetInfo, MixCombination, MixProjectConfig } from "../../src/shared/types.js";
+import type { AssetInfo, MixCombination, MixCombinationBgmTrack, MixProjectConfig } from "../../src/shared/types.js";
 import { describeMissingBinary, getFfmpegPath } from "./ffmpegBinaries.js";
 import { probeAsset } from "./mediaProbe.js";
 
@@ -27,15 +27,17 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     const videoAssets = await Promise.all(slots.map((slot) => ensureLocalAsset(combination.slotAssets[slot.name], config.outputDir)));
     const first = videoAssets[0];
     const { width, height } = resolveCanvasSize(config, first);
-    const sourceLoudness = await resolveSourceLoudness(videoAssets);
-    const bgmLoudness = combination.bgm ? await resolveBgmLoudness(config.bgmAssets, combination.bgm) : undefined;
+    const normalizeLoudness = config.normalizeLoudness !== false;
+    const sourceLoudness = normalizeLoudness ? await resolveSourceLoudness(videoAssets) : [];
+    const bgmTracks = resolveCombinationBgmTracks(config, combination);
+    const bgmLoudness = normalizeLoudness ? await resolveBgmLoudness(bgmTracks) : [];
 
     const args: string[] = ["-y"];
     for (const asset of videoAssets) {
       args.push("-i", asset.path);
     }
-    if (combination.bgm) {
-      args.push("-stream_loop", "-1", "-i", combination.bgm.path);
+    for (const track of bgmTracks) {
+      args.push("-stream_loop", "-1", "-i", track.asset.path);
     }
 
     const videoFilters = videoAssets.map((_, index) => {
@@ -61,30 +63,40 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       `${concatInputs}concat=n=${videoAssets.length}:v=1:a=1[vout][asrc]`
     ];
 
-    const bgmRange = combination.bgm ? resolveBgmRange(config, slots, videoAssets) : undefined;
-
-    if (combination.bgm && bgmRange) {
-      const bgmInputIndex = videoAssets.length;
-      const fadeDuration = Math.min(config.bgmRange.fadeOutSeconds, bgmRange.durationSeconds);
-      const fadeStart = Math.max(0, bgmRange.durationSeconds - fadeDuration);
+    const activeBgmLabels: string[] = [];
+    bgmTracks.forEach((track, trackIndex) => {
+      const bgmRange = resolveBgmRange(track.range, slots, videoAssets);
+      if (!bgmRange) {
+        return;
+      }
+      const bgmInputIndex = videoAssets.length + trackIndex;
+      const fadeInDuration = Math.min(track.range.fadeInSeconds ?? 0, bgmRange.durationSeconds);
+      const fadeOutDuration = Math.min(track.range.fadeOutSeconds ?? 0, Math.max(0, bgmRange.durationSeconds - fadeInDuration));
+      const fadeOutStart = Math.max(0, bgmRange.durationSeconds - fadeOutDuration);
       const delayMs = Math.max(0, Math.round(bgmRange.offsetSeconds * 1000));
-      const bgmGainDb = bgmLoudness?.gainDb ?? 0;
+      const bgmGainDb = bgmLoudness[trackIndex]?.gainDb ?? 0;
+      const label = `abgm${trackIndex}`;
       const bgmFilters = [
         "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo",
         `atrim=duration=${bgmRange.durationSeconds.toFixed(3)}`,
         "asetpts=PTS-STARTPTS",
-        fadeDuration > 0 ? `afade=t=out:st=${fadeStart.toFixed(3)}:d=${fadeDuration.toFixed(3)}` : undefined,
+        fadeInDuration > 0 ? `afade=t=in:st=0:d=${fadeInDuration.toFixed(3)}` : undefined,
+        fadeOutDuration > 0 ? `afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOutDuration.toFixed(3)}` : undefined,
         `volume=${config.bgmVolume}`,
         bgmGainDb !== 0 ? `volume=${bgmGainDb.toFixed(2)}dB` : undefined,
         `adelay=${formatStereoDelay(delayMs)}`
       ].filter(Boolean);
-      filters.push(`[${bgmInputIndex}:a]${bgmFilters.join(",")}[abgm]`);
-      filters.push("[asrc][abgm]amix=inputs=2:duration=first:dropout_transition=0[aout]");
+      filters.push(`[${bgmInputIndex}:a]${bgmFilters.join(",")}[${label}]`);
+      activeBgmLabels.push(`[${label}]`);
+    });
+
+    if (activeBgmLabels.length > 0) {
+      filters.push(`[asrc]${activeBgmLabels.join("")}amix=inputs=${activeBgmLabels.length + 1}:duration=first:dropout_transition=0[aout]`);
     }
 
-    args.push("-filter_complex", filters.join(";"), "-map", "[vout]", "-map", combination.bgm && bgmRange ? "[aout]" : "[asrc]");
+    args.push("-filter_complex", filters.join(";"), "-map", "[vout]", "-map", activeBgmLabels.length > 0 ? "[aout]" : "[asrc]");
 
-    if (combination.bgm && bgmRange) {
+    if (activeBgmLabels.length > 0) {
       args.push("-shortest");
     }
 
@@ -154,7 +166,7 @@ async function ensureLocalAsset(asset: AssetInfo, outputDir: string): Promise<As
 }
 
 function shouldProbeAsset(asset: AssetInfo): boolean {
-  return asset.kind === "video" && (asset.hasAudio === undefined || asset.durationSeconds === undefined || asset.width === undefined || asset.height === undefined);
+  return asset.kind === "video";
 }
 
 async function withProbedMetadata(asset: AssetInfo): Promise<AssetInfo> {
@@ -240,29 +252,56 @@ async function downloadRemoteAsset(urlString: string, targetPath: string, redire
 }
 
 async function resolveSourceLoudness(videoAssets: AssetInfo[]): Promise<Array<{ meanDb?: number; gainDb: number }>> {
-  const measured = await Promise.all(videoAssets.map((asset) => (asset.hasAudio ? measureMeanVolume(asset.path) : undefined)));
-  const reference = measured[0];
+  const measured: Array<{ meanDb?: number; gainDb: number }> = [];
+  let referenceDb: number | undefined;
 
-  return measured.map((meanDb) => ({
-    meanDb,
-    gainDb: reference !== undefined && meanDb !== undefined ? clampGain(reference - meanDb) : 0
+  for (const asset of videoAssets) {
+    const meanDb = asset.hasAudio ? await measureMeanVolume(asset.path) : undefined;
+    if (referenceDb === undefined && meanDb !== undefined) {
+      referenceDb = meanDb;
+    }
+    measured.push({ meanDb, gainDb: 0 });
+  }
+
+  return measured.map((item) => ({
+    meanDb: item.meanDb,
+    gainDb: referenceDb !== undefined && item.meanDb !== undefined ? clampGain(referenceDb - item.meanDb) : 0
   }));
 }
 
-async function resolveBgmLoudness(
-  bgmAssets: AssetInfo[],
-  currentBgm: AssetInfo
-): Promise<{ referenceDb?: number; meanDb?: number; gainDb: number } | undefined> {
-  const referenceAsset = bgmAssets[0] ?? currentBgm;
-  const [referenceDb, meanDb] = await Promise.all([measureMeanVolume(referenceAsset.path), measureMeanVolume(currentBgm.path)]);
-  if (referenceDb === undefined || meanDb === undefined) {
-    return { referenceDb, meanDb, gainDb: 0 };
+async function resolveBgmLoudness(tracks: MixCombinationBgmTrack[]): Promise<Array<{ meanDb?: number; gainDb: number }>> {
+  const measured: Array<{ meanDb?: number; gainDb: number }> = [];
+  let referenceDb: number | undefined;
+
+  for (const track of tracks) {
+    const meanDb = track.asset.hasAudio === false ? undefined : await measureMeanVolume(track.asset.path);
+    if (referenceDb === undefined && meanDb !== undefined) {
+      referenceDb = meanDb;
+    }
+    measured.push({ meanDb, gainDb: 0 });
   }
-  return {
-    referenceDb,
-    meanDb,
-    gainDb: clampGain(referenceDb - meanDb)
-  };
+
+  return measured.map((item) => ({
+    meanDb: item.meanDb,
+    gainDb: referenceDb !== undefined && item.meanDb !== undefined ? clampGain(referenceDb - item.meanDb) : 0
+  }));
+}
+
+function resolveCombinationBgmTracks(config: MixProjectConfig, combination: MixCombination): MixCombinationBgmTrack[] {
+  if (combination.bgmTracks && combination.bgmTracks.length > 0) {
+    return combination.bgmTracks;
+  }
+  if (!combination.bgm) {
+    return [];
+  }
+  return [
+    {
+      id: "bgm_1",
+      name: "BGM 1",
+      asset: combination.bgm,
+      range: config.bgmRange
+    }
+  ];
 }
 
 function measureMeanVolume(filePath: string): Promise<number | undefined> {
@@ -272,7 +311,20 @@ function measureMeanVolume(filePath: string): Promise<number | undefined> {
   }
 
   const promise = new Promise<number | undefined>((resolve) => {
-    const child = spawn(getFfmpegPath(), ["-hide_banner", "-nostats", "-i", filePath, "-af", "volumedetect", "-f", "null", "-"]);
+    const child = spawn(getFfmpegPath(), [
+      "-hide_banner",
+      "-nostats",
+      "-i",
+      filePath,
+      "-vn",
+      "-sn",
+      "-dn",
+      "-af",
+      "volumedetect",
+      "-f",
+      "null",
+      "-"
+    ]);
     let stderr = "";
 
     child.stderr.on("data", (chunk: Buffer) => {
@@ -328,12 +380,12 @@ function resolveCanvasSize(config: MixProjectConfig, first: AssetInfo): { width:
 }
 
 function resolveBgmRange(
-  config: MixProjectConfig,
+  range: MixProjectConfig["bgmRange"],
   slots: MixProjectConfig["slots"],
   videoAssets: AssetInfo[]
 ): { offsetSeconds: number; durationSeconds: number } | undefined {
-  const startName = config.bgmRange.startSlotName ?? slots[0]?.name;
-  const endName = config.bgmRange.endSlotName ?? slots.at(-1)?.name;
+  const startName = range.startSlotName ?? slots[0]?.name;
+  const endName = range.endSlotName ?? slots.at(-1)?.name;
   const startIndex = slots.findIndex((slot) => slot.name === startName);
   const endIndex = slots.findIndex((slot) => slot.name === endName);
 
