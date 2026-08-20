@@ -1582,17 +1582,11 @@ export default function App() {
                       </div>
                       <div className="form-line">
                         <span className="required">标签</span>
-                        <select
+                        <CloudLabelPicker
+                          labels={flattenedLabels}
                           value={cloudImportMeta.labelIds}
-                          onChange={(event) => setCloudImportMeta({ ...cloudImportMeta, labelIds: event.target.value })}
-                        >
-                          <option value="">请选择当前分类下的二级标签</option>
-                          {flattenedLabels.map((label) => (
-                            <option value={label.id} key={label.id}>
-                              {label.name}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={(labelIds) => setCloudImportMeta({ ...cloudImportMeta, labelIds })}
+                        />
                       </div>
                       <div className="form-line">
                         <span className="required">发布形式</span>
@@ -1917,17 +1911,11 @@ export default function App() {
                     </div>
                     <div className="form-line">
                       <span className="required">标签</span>
-                      <select
+                      <CloudLabelPicker
+                        labels={flattenedLabels}
                         value={cloudImportMeta.labelIds}
-                        onChange={(event) => setCloudImportMeta({ ...cloudImportMeta, labelIds: event.target.value })}
-                      >
-                        <option value="">请选择当前分类下的二级标签</option>
-                        {flattenedLabels.map((label) => (
-                          <option value={label.id} key={label.id}>
-                            {label.name}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(labelIds) => setCloudImportMeta({ ...cloudImportMeta, labelIds })}
+                      />
                     </div>
                     <div className="form-line">
                       <span className="required">视频名称</span>
@@ -2124,6 +2112,63 @@ function Stat({ label, value }: { label: string; value: number }) {
     <div className="stat">
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function CloudLabelPicker({
+  labels,
+  value,
+  onChange
+}: {
+  labels: CloudVideoLabel[];
+  value: string;
+  onChange: (labelIds: string) => void;
+}) {
+  const selectedIds = new Set(parseCloudLabelIds(value));
+  const selectedLabels = labels.filter((label) => selectedIds.has(String(label.id)));
+
+  function updateSelection(labelId: string, checked: boolean) {
+    const nextIds = new Set(selectedIds);
+    if (checked) {
+      nextIds.add(labelId);
+    } else {
+      nextIds.delete(labelId);
+    }
+    onChange(labels.filter((label) => nextIds.has(String(label.id))).map((label) => String(label.id)).join(","));
+  }
+
+  return (
+    <div className="multi-label-picker" role="group" aria-label="云管家标签">
+      <div className="multi-label-picker-head">
+        <div>
+          <strong>{selectedLabels.length > 0 ? `已选 ${selectedLabels.length} 个标签` : "请选择标签"}</strong>
+          {selectedLabels.length > 0 && (
+            <span className="multi-label-selected-names">{selectedLabels.map((label) => label.name).join("、")}</span>
+          )}
+        </div>
+        {selectedLabels.length > 0 && (
+          <button className="multi-label-clear" type="button" onClick={() => onChange("")}>
+            清空
+          </button>
+        )}
+      </div>
+      {labels.length > 0 ? (
+        <div className="multi-label-options">
+          {labels.map((label) => {
+            const labelId = String(label.id);
+            const checked = selectedIds.has(labelId);
+            return (
+              <label className={checked ? "multi-label-option selected" : "multi-label-option"} key={label.id}>
+                <input type="checkbox" checked={checked} onChange={(event) => updateSelection(labelId, event.target.checked)} />
+                <span>{label.name}</span>
+              </label>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="multi-label-empty">请先选择二级分类，再勾选标签。</p>
+      )}
     </div>
   );
 }
@@ -2603,11 +2648,18 @@ function flattenSelectableCloudLabels(labels: CloudVideoLabel[]): CloudVideoLabe
 
 function isValidCloudLabelSelection(labelIds: string, labels: CloudVideoLabel[]): boolean {
   const allowedIds = new Set(labels.map((label) => String(label.id)));
-  return labelIds
-    .split(",")
-    .map((labelId) => labelId.trim())
-    .filter(Boolean)
-    .every((labelId) => allowedIds.has(labelId));
+  return parseCloudLabelIds(labelIds).every((labelId) => allowedIds.has(labelId));
+}
+
+function parseCloudLabelIds(labelIds: string): string[] {
+  return Array.from(
+    new Set(
+      labelIds
+        .split(",")
+        .map((labelId) => labelId.trim())
+        .filter(Boolean)
+    )
+  );
 }
 
 function formatImportErrors(errorList: CloudImportJob["errorList"]): string {
