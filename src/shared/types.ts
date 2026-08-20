@@ -2,6 +2,8 @@ export type ExportMode = "video" | "draft" | "both";
 
 export type ExportTarget = "local" | "cloud" | "both";
 
+export type MixExecutionTarget = "local" | "server";
+
 export type CloudVideoRotation = "none" | "clockwise90" | "counterClockwise90" | "rotate180";
 
 export type JobStatus = "idle" | "running" | "paused" | "stopping" | "completed" | "failed";
@@ -11,8 +13,6 @@ export type UpdateStatus =
   | "checking"
   | "available"
   | "not-available"
-  | "downloading"
-  | "downloaded"
   | "error";
 
 export type AssetKind = "video" | "audio";
@@ -133,6 +133,7 @@ export interface UpdateSnapshot {
   availableVersion?: string;
   progressPercent?: number;
   error?: string;
+  url?: string;
 }
 
 export interface UpdateReleaseNotes {
@@ -291,6 +292,18 @@ export interface CloudImportResult {
   msg?: string;
 }
 
+export interface RemoteMixSettings {
+  serverUrl: string;
+  token?: string;
+}
+
+export interface RemoteMixSettingsView {
+  serverUrl: string;
+  hasToken: boolean;
+  ok?: boolean;
+  message?: string;
+}
+
 export interface AppApi {
   selectDirectory: () => Promise<string | undefined>;
   selectFiles: (kind: AssetKind) => Promise<string[]>;
@@ -300,6 +313,14 @@ export interface AppApi {
   buildCombinations: (config: MixProjectConfig) => Promise<MixCombination[]>;
   scanProject: (projectDir: string, templateDraftPath?: string) => Promise<ScanResult>;
   startJob: (config: MixProjectConfig) => Promise<BatchJobSnapshot>;
+  startRemoteJob: (config: MixProjectConfig) => Promise<BatchJobSnapshot>;
+  pauseRemoteJob: () => Promise<BatchJobSnapshot>;
+  resumeRemoteJob: () => Promise<BatchJobSnapshot>;
+  stopRemoteJob: () => Promise<BatchJobSnapshot>;
+  getRemoteJob: () => Promise<BatchJobSnapshot>;
+  getRemoteMixSettings: () => Promise<RemoteMixSettingsView>;
+  saveRemoteMixSettings: (settings: RemoteMixSettings) => Promise<RemoteMixSettingsView>;
+  testRemoteMixServer: () => Promise<RemoteMixSettingsView>;
   pauseJob: () => Promise<BatchJobSnapshot>;
   resumeJob: () => Promise<BatchJobSnapshot>;
   stopJob: () => Promise<BatchJobSnapshot>;
@@ -308,8 +329,6 @@ export interface AppApi {
   revealPath: (targetPath: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   checkForUpdates: () => Promise<UpdateSnapshot>;
-  downloadUpdate: () => Promise<UpdateSnapshot>;
-  installUpdate: () => Promise<void>;
   getUpdateStatus: () => Promise<UpdateSnapshot>;
   getUpdateReleaseNotes: () => Promise<UpdateReleaseNotes>;
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) => () => void;
@@ -328,6 +347,7 @@ export interface AppApi {
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => Promise<string>;
   importCloudVideos: (videos: CloudImportVideo[]) => Promise<CloudImportJob>;
   uploadCloudLocalVideos: (videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
+  uploadRemoteCloudVideos: (videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
   queryCloudImportResult: (
     requestId: string,
     pageNo?: number,

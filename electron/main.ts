@@ -7,6 +7,7 @@ import { JobManager } from "./services/jobManager.js";
 import { createCombinations } from "./services/combinator.js";
 import { probeAsset } from "./services/mediaProbe.js";
 import { YunguanjiaClient } from "./services/yunguanjiaClient.js";
+import { RemoteMixClient } from "./services/remoteMixClient.js";
 import { UpdateManager } from "./services/updateManager.js";
 import { assetId, isVideoFile, naturalCompare } from "./utils/path.js";
 import type {
@@ -16,14 +17,16 @@ import type {
   CloudLocalUploadVideo,
   CloudSettings,
   CloudVideoListQuery,
-  MixProjectConfig
+  MixProjectConfig,
+  RemoteMixSettings
 } from "../src/shared/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const jobManager = new JobManager();
 const cloudClient = new YunguanjiaClient(() => app.getPath("userData"));
-const updateManager = new UpdateManager(app.getVersion(), app.isPackaged);
+const remoteMixClient = new RemoteMixClient(() => app.getPath("userData"));
+const updateManager = new UpdateManager(app.getVersion());
 const DEFAULT_CLOUD_LOGIN_URL = "https://sucaiwang.zhishangsoft.com/#/classification";
 const DEFAULT_CLOUD_UPLOAD_BASE_URL = "https://sucaiwang-api-elb.zhishangsoft.com";
 const PREVIEW_PROTOCOL = "batchmix-preview";
@@ -125,6 +128,10 @@ updateManager.on("update", (snapshot) => {
   mainWindow?.webContents.send("update:status", snapshot);
 });
 
+remoteMixClient.on("update", (snapshot) => {
+  mainWindow?.webContents.send("job:update", snapshot);
+});
+
 function registerIpc(): void {
   ipcMain.handle("dialog:select-directory", async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
@@ -224,6 +231,18 @@ function registerIpc(): void {
     return jobManager.start(config);
   });
 
+  ipcMain.handle("remote:get-settings", async () => remoteMixClient.getSettingsView());
+  ipcMain.handle("remote:save-settings", async (_event, settings: RemoteMixSettings) => remoteMixClient.saveSettings(settings));
+  ipcMain.handle("remote:test-server", async () => remoteMixClient.testConnection());
+  ipcMain.handle("remote:start", async (_event, config: MixProjectConfig) => remoteMixClient.start(config));
+  ipcMain.handle("remote:pause", async () => remoteMixClient.pause());
+  ipcMain.handle("remote:resume", async () => remoteMixClient.resume());
+  ipcMain.handle("remote:stop", async () => remoteMixClient.stop());
+  ipcMain.handle("remote:get", async () => remoteMixClient.getSnapshot());
+  ipcMain.handle("remote:upload-cloud-videos", async (_event, videos: CloudLocalUploadVideo[]) => {
+    return remoteMixClient.uploadCloudVideos(videos, await cloudClient.getPortableUploadSettings());
+  });
+
   ipcMain.handle("job:pause", async () => jobManager.pause());
   ipcMain.handle("job:resume", async () => jobManager.resume());
   ipcMain.handle("job:stop", async () => jobManager.stop());
@@ -242,8 +261,6 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("update:check", async () => updateManager.check());
-  ipcMain.handle("update:download", async () => updateManager.download());
-  ipcMain.handle("update:install", async () => updateManager.quitAndInstall());
   ipcMain.handle("update:get-status", async () => updateManager.getSnapshot());
   ipcMain.handle("update:get-release-notes", async () => updateManager.getReleaseNotes());
 

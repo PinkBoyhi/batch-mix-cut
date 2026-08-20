@@ -1,0 +1,389 @@
+import { createReadStream, createWriteStream } from "node:fs";
+import fs from "node:fs/promises";
+import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { scanProject } from "../services/projectScanner.js";
+import { JobManager } from "../services/jobManager.js";
+import { YunguanjiaClient } from "../services/yunguanjiaClient.js";
+import type { BatchJobSnapshot, MixProjectConfig } from "../../src/shared/types.js";
+import type { CloudLocalUploadVideo, CloudSettings } from "../../src/shared/types.js";
+
+interface ServerJob {
+  id: string;
+  manager: JobManager;
+  snapshot: BatchJobSnapshot;
+  config: MixProjectConfig;
+  createdAt: string;
+}
+
+const host = readArg("--host", process.env.MIX_SERVER_HOST ?? "0.0.0.0");
+const port = Number(readArg("--port", process.env.MIX_SERVER_PORT ?? "8787"));
+const workspaceRoot = path.resolve(readArg("--workspace", process.env.MIX_SERVER_WORKSPACE ?? path.join(process.cwd(), "mix-server-workspace")));
+const allowAnyPath = process.env.MIX_SERVER_ALLOW_ANY_PATH === "1";
+const maxUploadBytes = Number(process.env.MIX_SERVER_MAX_UPLOAD_MB ?? "20480") * 1024 * 1024;
+const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
+const jobs = new Map<string, ServerJob>();
+
+async function main(): Promise<void> {
+  await fs.mkdir(path.join(workspaceRoot, "uploads"), { recursive: true });
+  await fs.mkdir(path.join(workspaceRoot, "projects"), { recursive: true });
+
+  const server = http.createServer((request, response) => {
+    void handleRequest(request, response).catch((error) => {
+      sendJson(response, 500, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+  });
+
+  server.listen(port, host, () => {
+    console.log(`医博生物混剪服务器已启动：http://${host}:${port}`);
+    console.log(`工作目录：${workspaceRoot}`);
+    console.log(`访问 Token：${accessToken}`);
+  });
+}
+
+async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const url = new URL(request.url ?? "/", "http://localhost");
+  setCors(response);
+
+  if (request.method === "OPTIONS") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
+  if (url.pathname !== "/health" && !isAuthorized(request)) {
+    sendJson(response, 401, { ok: false, error: "未授权，请在 x-mix-token 请求头传入服务器启动时显示的 Token" });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/health") {
+    sendJson(response, 200, {
+      ok: true,
+      service: "yibo-batch-mix-server",
+      workspaceRoot,
+      authRequired: true,
+      jobs: jobs.size
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/auth/check") {
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/projects/upload") {
+    const name = safeSegment(url.searchParams.get("name") || "project");
+    const uploadedZip = path.join(workspaceRoot, "uploads", `${Date.now()}-${name}.zip`);
+    const projectDir = path.join(workspaceRoot, "projects", `${Date.now()}-${name}`);
+    await saveRequestBodyToFile(request, uploadedZip);
+    await fs.mkdir(projectDir, { recursive: true });
+    await unzip(uploadedZip, projectDir);
+    sendJson(response, 200, { ok: true, projectDir });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/files/upload") {
+    const relativePath = url.searchParams.get("path") ?? "";
+    const targetPath = resolveWorkspaceRelativePath(relativePath);
+    await saveRequestBodyToFile(request, targetPath);
+    sendJson(response, 200, { ok: true, path: targetPath });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/scan") {
+    const body = await readJson<{ projectDir: string; templateDraftPath?: string }>(request);
+    assertAllowedPath(body.projectDir);
+    if (body.templateDraftPath) {
+      assertAllowedPath(body.templateDraftPath);
+    }
+    const result = await scanProject(body.projectDir, body.templateDraftPath);
+    sendJson(response, 200, { ok: true, result });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/jobs/from-project") {
+    const body = await readJson<{ projectDir: string; templateDraftPath?: string; overrides?: Partial<MixProjectConfig> }>(request);
+    assertAllowedPath(body.projectDir);
+    if (body.templateDraftPath) {
+      assertAllowedPath(body.templateDraftPath);
+    }
+    const scan = await scanProject(body.projectDir, body.templateDraftPath);
+    const config = {
+      ...scan.config,
+      ...(body.overrides ?? {})
+    };
+    validateConfigPaths(config);
+    const job = await startJob(config);
+    sendJson(response, 200, { ok: true, jobId: job.id, snapshot: job.snapshot, warnings: scan.warnings });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/jobs") {
+    const body = await readJson<{ config: MixProjectConfig }>(request);
+    validateConfigPaths(body.config);
+    const job = await startJob(body.config);
+    sendJson(response, 200, { ok: true, jobId: job.id, snapshot: job.snapshot });
+    return;
+  }
+
+  const jobMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)(?:\/([^/]+))?(?:\/(.+))?$/);
+  if (jobMatch) {
+    const [, jobId, action, rest] = jobMatch;
+    const job = jobs.get(jobId);
+    if (!job) {
+      sendJson(response, 404, { ok: false, error: "任务不存在" });
+      return;
+    }
+
+    if (request.method === "GET" && !action) {
+      sendJson(response, 200, { ok: true, jobId, snapshot: job.snapshot });
+      return;
+    }
+
+    if (request.method === "POST" && action === "pause") {
+      job.snapshot = await job.manager.pause();
+      sendJson(response, 200, { ok: true, snapshot: job.snapshot });
+      return;
+    }
+
+    if (request.method === "POST" && action === "resume") {
+      job.snapshot = await job.manager.resume();
+      sendJson(response, 200, { ok: true, snapshot: job.snapshot });
+      return;
+    }
+
+    if (request.method === "POST" && action === "stop") {
+      job.snapshot = await job.manager.stop();
+      sendJson(response, 200, { ok: true, snapshot: job.snapshot });
+      return;
+    }
+
+    if (request.method === "GET" && action === "outputs") {
+      const videosDir = path.join(job.config.outputDir, "videos");
+      if (!rest) {
+        const files = await listOutputVideos(videosDir);
+        sendJson(response, 200, { ok: true, files });
+        return;
+      }
+      const filePath = path.join(videosDir, safeSegment(decodeURIComponent(rest)));
+      assertAllowedPath(filePath);
+      await sendFile(response, filePath);
+      return;
+    }
+
+    if (request.method === "POST" && action === "cloud" && rest === "upload") {
+      const body = await readJson<{ settings: CloudSettings; videos: CloudLocalUploadVideo[] }>(request);
+      const client = new YunguanjiaClient(() => path.join(workspaceRoot, ".cloud"));
+      await client.saveSettings(body.settings);
+      const videos = body.videos.map((video) => ({
+        ...video,
+        localPath: resolveJobOutputPath(job, video.localPath)
+      }));
+      const result = await client.uploadLocalVideos(videos);
+      sendJson(response, 200, { ok: true, result });
+      return;
+    }
+  }
+
+  sendJson(response, 404, { ok: false, error: "接口不存在" });
+}
+
+async function startJob(config: MixProjectConfig): Promise<ServerJob> {
+  const id = `srv_${Date.now()}_${randomUUID().slice(0, 8)}`;
+  const manager = new JobManager();
+  const job: ServerJob = {
+    id,
+    manager,
+    snapshot: manager.getSnapshot(),
+    config,
+    createdAt: new Date().toISOString()
+  };
+  jobs.set(id, job);
+  manager.on("update", (snapshot: BatchJobSnapshot) => {
+    job.snapshot = snapshot;
+  });
+  job.snapshot = await manager.start(config);
+  return job;
+}
+
+function readArg(name: string, fallback: string): string {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] ?? fallback : fallback;
+}
+
+function isAuthorized(request: IncomingMessage): boolean {
+  return request.headers["x-mix-token"] === accessToken;
+}
+
+function setCors(response: ServerResponse): void {
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  response.setHeader("Access-Control-Allow-Headers", "content-type,x-mix-token");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+}
+
+function sendJson(response: ServerResponse, status: number, data: unknown): void {
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(data));
+}
+
+async function readJson<T>(request: IncomingMessage): Promise<T> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > 25 * 1024 * 1024) {
+      throw new Error("JSON 请求体过大");
+    }
+    chunks.push(buffer);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+}
+
+async function saveRequestBodyToFile(request: IncomingMessage, targetPath: string): Promise<void> {
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await new Promise<void>((resolve, reject) => {
+    const output = createWriteStream(targetPath);
+    let size = 0;
+    request.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxUploadBytes) {
+        output.destroy(new Error("上传文件超过服务器限制"));
+        request.destroy();
+      }
+    });
+    request.pipe(output);
+    output.on("finish", resolve);
+    output.on("error", reject);
+    request.on("error", reject);
+  });
+}
+
+async function unzip(zipPath: string, targetDir: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("unzip", ["-q", zipPath, "-d", targetDir]);
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr.trim() || `unzip 退出码 ${code}`));
+      }
+    });
+  });
+}
+
+function validateConfigPaths(config: MixProjectConfig): void {
+  assertAllowedPath(config.projectDir);
+  assertAllowedPath(config.outputDir);
+  if (config.templateDraftPath) {
+    assertAllowedPath(config.templateDraftPath);
+  }
+  for (const slot of config.slots) {
+    for (const asset of slot.assets) {
+      assertAllowedAssetPath(asset.path);
+    }
+  }
+  for (const asset of config.bgmAssets) {
+    assertAllowedAssetPath(asset.path);
+  }
+  for (const track of config.bgmTracks ?? []) {
+    for (const asset of track.assets) {
+      assertAllowedAssetPath(asset.path);
+    }
+  }
+}
+
+function assertAllowedAssetPath(filePath: string): void {
+  if (/^https?:\/\//i.test(filePath)) {
+    return;
+  }
+  assertAllowedPath(filePath);
+}
+
+function assertAllowedPath(filePath: string): void {
+  if (allowAnyPath) {
+    return;
+  }
+  const resolved = path.resolve(filePath);
+  if (resolved !== workspaceRoot && !resolved.startsWith(`${workspaceRoot}${path.sep}`)) {
+    throw new Error(`路径不在服务器工作目录内：${resolved}`);
+  }
+}
+
+function resolveWorkspaceRelativePath(relativePath: string): string {
+  const normalized = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, "");
+  if (path.isAbsolute(normalized) || normalized.startsWith(`..${path.sep}`) || normalized === "..") {
+    throw new Error("上传路径非法");
+  }
+  const resolved = path.resolve(workspaceRoot, normalized);
+  assertAllowedPath(resolved);
+  return resolved;
+}
+
+function safeSegment(value: string): string {
+  return value.replace(/[\\/:\0]/g, "_").replace(/^\.+$/, "_").slice(0, 120) || "untitled";
+}
+
+async function listOutputVideos(dir: string): Promise<Array<{ name: string; path: string; size: number; url: string }>> {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".mp4")) {
+      continue;
+    }
+    const filePath = path.join(dir, entry.name);
+    const stat = await fs.stat(filePath);
+    files.push({
+      name: entry.name,
+      path: filePath,
+      size: stat.size,
+      url: `/api/jobs/:jobId/outputs/${encodeURIComponent(entry.name)}`
+    });
+  }
+  return files;
+}
+
+async function sendFile(response: ServerResponse, filePath: string): Promise<void> {
+  const stat = await fs.stat(filePath);
+  response.writeHead(200, {
+    "content-type": "video/mp4",
+    "content-length": stat.size,
+    "content-disposition": `attachment; filename="${encodeURIComponent(path.basename(filePath))}"`
+  });
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.pipe(response);
+    stream.on("end", resolve);
+    stream.on("error", reject);
+  });
+}
+
+function resolveJobOutputPath(job: ServerJob, requestedPath: string): string {
+  if (requestedPath && path.isAbsolute(requestedPath)) {
+    assertAllowedPath(requestedPath);
+    return requestedPath;
+  }
+  const fileName = safeSegment(path.basename(requestedPath || ""));
+  const resolved = path.join(job.config.outputDir, "videos", fileName);
+  assertAllowedPath(resolved);
+  return resolved;
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  void main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

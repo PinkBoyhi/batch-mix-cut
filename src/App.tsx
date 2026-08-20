@@ -37,8 +37,10 @@ import type {
   CloudVideoType,
   ExportTarget,
   ExportMode,
+  MixExecutionTarget,
   MixCombination,
   MixProjectConfig,
+  RemoteMixSettingsView,
   SegmentSlot,
   UpdateReleaseNotes,
   UpdateSnapshot
@@ -71,6 +73,11 @@ const emptyUpdate: UpdateSnapshot = {
   currentVersion: "0.0.0"
 };
 
+const emptyRemoteMixSettings: RemoteMixSettingsView = {
+  serverUrl: "http://10.0.0.133:8787",
+  hasToken: false
+};
+
 interface CloudImportRow {
   localPath: string;
   videoName: string;
@@ -90,6 +97,12 @@ export default function App() {
   const [combinations, setCombinations] = useState<MixCombination[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [job, setJob] = useState<BatchJobSnapshot>(emptyJob);
+  const [mixExecutionTarget, setMixExecutionTarget] = useState<MixExecutionTarget>("local");
+  const [activeMixExecutionTarget, setActiveMixExecutionTarget] = useState<MixExecutionTarget>("local");
+  const [remoteMixSettings, setRemoteMixSettings] = useState<RemoteMixSettingsView>(emptyRemoteMixSettings);
+  const [remoteServerUrl, setRemoteServerUrl] = useState(emptyRemoteMixSettings.serverUrl);
+  const [remoteToken, setRemoteToken] = useState("");
+  const [remoteStatus, setRemoteStatus] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [cloudSettings, setCloudSettings] = useState<CloudSettingsView>(emptyCloudSettings);
@@ -138,6 +151,22 @@ export default function App() {
   useEffect(() => {
     if (!api) return;
     return api.onJobUpdate(setJob);
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return;
+    void api
+      .getRemoteMixSettings()
+      .then(async (settings) => {
+        setRemoteMixSettings(settings);
+        setRemoteServerUrl(settings.serverUrl);
+        if (settings.hasToken) {
+          const tested = await api.testRemoteMixServer();
+          setRemoteMixSettings(tested);
+          setRemoteStatus(tested.message);
+        }
+      })
+      .catch((err) => setRemoteStatus(toMessage(err)));
   }, [api]);
 
   useEffect(() => {
@@ -213,7 +242,12 @@ export default function App() {
   ]);
 
   const progress = job.total > 0 ? Math.round(((job.completed + job.failed) / job.total) * 100) : 0;
-  const canStart = !!config && combinations.length > 0 && job.status !== "running" && job.status !== "paused";
+  const canStart =
+    !!config &&
+    combinations.length > 0 &&
+    job.status !== "running" &&
+    job.status !== "paused" &&
+    (mixExecutionTarget === "local" || (remoteMixSettings.ok === true && remoteMixSettings.hasToken));
   const speedModeEnabled = Boolean(config && config.normalizeLoudness === false && config.videoProfile.preset === "veryfast");
   const slotSummary = useMemo(() => {
     if (!config) return "未创建项目";
@@ -376,7 +410,8 @@ export default function App() {
       setCloudImportRequestId("");
       setCloudImportResults([]);
       setAutoCloudImportJobId(undefined);
-      setJob(await api.startJob(config));
+      setActiveMixExecutionTarget(mixExecutionTarget);
+      setJob(mixExecutionTarget === "server" ? await api.startRemoteJob(config) : await api.startJob(config));
     } catch (err) {
       setError(toMessage(err));
     }
@@ -391,6 +426,34 @@ export default function App() {
     }
   }
 
+  async function saveRemoteMixServer() {
+    if (!api) return;
+    setRemoteStatus("正在连接服务器...");
+    try {
+      const settings = await api.saveRemoteMixSettings({ serverUrl: remoteServerUrl, token: remoteToken });
+      setRemoteMixSettings(settings);
+      setRemoteStatus(settings.message ?? "服务器配置已保存");
+      if (settings.serverUrl) {
+        setRemoteServerUrl(settings.serverUrl);
+      }
+      setRemoteToken("");
+    } catch (err) {
+      setRemoteStatus(toMessage(err));
+    }
+  }
+
+  async function testRemoteMixServer() {
+    if (!api) return;
+    setRemoteStatus("正在测试服务器...");
+    try {
+      const settings = await api.testRemoteMixServer();
+      setRemoteMixSettings(settings);
+      setRemoteStatus(settings.message ?? "服务器连接正常");
+    } catch (err) {
+      setRemoteStatus(toMessage(err));
+    }
+  }
+
   async function checkForUpdates() {
     if (!api) return;
     try {
@@ -400,25 +463,6 @@ export default function App() {
         ...current,
         status: "error",
         message: "更新检查失败",
-        error: toMessage(err)
-      }));
-    }
-  }
-
-  async function installUpdate() {
-    if (!api) return;
-    await api.installUpdate();
-  }
-
-  async function downloadUpdate() {
-    if (!api) return;
-    try {
-      setUpdateSnapshot(await api.downloadUpdate());
-    } catch (err) {
-      setUpdateSnapshot((current) => ({
-        ...current,
-        status: "error",
-        message: "更新下载失败",
         error: toMessage(err)
       }));
     }
@@ -439,9 +483,10 @@ export default function App() {
   }
 
   async function openReleasePage() {
-    if (!api || !releaseNotes?.url) return;
+    const url = releaseNotes?.url || updateSnapshot.url || "https://github.com/PinkBoyhi/batch-mix-cut/releases/latest";
+    if (!api) return;
     try {
-      await api.openExternal(releaseNotes.url);
+      await api.openExternal(url);
     } catch (err) {
       setReleaseNotesError(toMessage(err));
     }
@@ -715,7 +760,8 @@ export default function App() {
     setCloudBusy(true);
     setCloudStatus(automatic ? "混剪已完成，正在上传本地成片到云管家..." : "正在上传本地成片到云管家...");
     try {
-      const result = await api.uploadCloudLocalVideos(videos);
+      const result =
+        activeMixExecutionTarget === "server" ? await api.uploadRemoteCloudVideos(videos) : await api.uploadCloudLocalVideos(videos);
       setCloudImportRequestId(result.importJob.requestId);
       setCloudImportRows((currentRows) =>
         currentRows.map((row) => {
@@ -932,6 +978,45 @@ export default function App() {
           <section className="panel">
             <h2>导出设置</h2>
             <label className="field">
+              <span>混剪位置</span>
+              <select value={mixExecutionTarget} onChange={(event) => setMixExecutionTarget(event.target.value as MixExecutionTarget)}>
+                <option value="local">本机混剪</option>
+                <option value="server">服务器混剪</option>
+              </select>
+            </label>
+
+            {mixExecutionTarget === "server" && (
+              <div className="remote-mix-card">
+                <div className="remote-mix-header">
+                  <strong>{remoteMixSettings.ok ? "服务器已连接" : "服务器未连接"}</strong>
+                  <span>{remoteMixSettings.serverUrl || remoteServerUrl}</span>
+                </div>
+                <label className="field">
+                  <span>服务器地址</span>
+                  <input value={remoteServerUrl} onChange={(event) => setRemoteServerUrl(event.target.value)} />
+                </label>
+                <label className="field">
+                  <span>Token</span>
+                  <input
+                    type="password"
+                    value={remoteToken}
+                    placeholder={remoteMixSettings.hasToken ? "已保存，留空不修改" : "填写服务器 Token"}
+                    onChange={(event) => setRemoteToken(event.target.value)}
+                  />
+                </label>
+                <div className="remote-mix-actions">
+                  <button className="secondary-inline" type="button" onClick={saveRemoteMixServer} disabled={!api}>
+                    保存服务器
+                  </button>
+                  <button className="secondary-inline" type="button" onClick={testRemoteMixServer} disabled={!api || !remoteMixSettings.hasToken}>
+                    测试连接
+                  </button>
+                </div>
+                {remoteStatus && <p className="hint-text">{remoteStatus}</p>}
+              </div>
+            )}
+
+            <label className="field">
               <span>输出模式</span>
               <select
                 value={config.exportMode}
@@ -1062,7 +1147,9 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => void (api ? runAction(() => api.pauseJob()) : undefined)}
+              onClick={() =>
+                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.pauseRemoteJob() : api.pauseJob())) : undefined)
+              }
               disabled={job.status !== "running"}
               title="暂停"
             >
@@ -1070,7 +1157,9 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => void (api ? runAction(() => api.resumeJob()) : undefined)}
+              onClick={() =>
+                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.resumeRemoteJob() : api.resumeJob())) : undefined)
+              }
               disabled={job.status !== "paused"}
               title="继续"
             >
@@ -1078,7 +1167,9 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => void (api ? runAction(() => api.stopJob()) : undefined)}
+              onClick={() =>
+                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.stopRemoteJob() : api.stopJob())) : undefined)
+              }
               disabled={job.status !== "running" && job.status !== "paused"}
               title="停止"
             >
@@ -1111,17 +1202,17 @@ export default function App() {
               className="secondary-inline"
               type="button"
               onClick={checkForUpdates}
-              disabled={!api || updateSnapshot.status === "checking" || updateSnapshot.status === "downloading"}
+              disabled={!api || updateSnapshot.status === "checking"}
             >
               检查更新
             </button>
             <button
               className="inline-command"
               type="button"
-              onClick={updateSnapshot.status === "downloaded" ? installUpdate : downloadUpdate}
-              disabled={!api || (updateSnapshot.status !== "available" && updateSnapshot.status !== "downloaded")}
+              onClick={() => void openReleasePage()}
+              disabled={!api}
             >
-              {updateSnapshot.status === "downloaded" ? "重启安装" : "下载新版"}
+              打开下载页
             </button>
             <button className="secondary-inline" type="button" onClick={openReleaseNotes} disabled={!api || releaseNotesLoading}>
               <FileText size={15} />

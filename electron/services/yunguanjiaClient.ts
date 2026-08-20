@@ -56,6 +56,19 @@ export class YunguanjiaClient {
     return toSettingsView(await this.readSettings());
   }
 
+  async getPortableUploadSettings(): Promise<CloudSettings> {
+    const settings = await this.ensureReadySettings(true);
+    return {
+      baseUrl: settings.baseUrl,
+      companyKey: settings.companyKey,
+      accountKey: settings.accountKey,
+      accountName: settings.accountName,
+      accountLogin: settings.accountLogin,
+      uploadBaseUrl: settings.uploadBaseUrl,
+      uploadToken: settings.uploadToken
+    };
+  }
+
   async saveSettings(settings: CloudSettings): Promise<CloudSettingsView> {
     const current = await this.readSettings();
     const next: StoredCloudSettings = {
