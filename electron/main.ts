@@ -41,14 +41,12 @@ const DEFAULT_CLOUD_UPLOAD_BASE_URL = "https://sucaiwang-api-elb.zhishangsoft.co
 const PREVIEW_PROTOCOL = "batchmix-preview";
 
 let mainWindow: BrowserWindow | undefined;
-let taskWindowCount = 0;
-
 interface TaskRuntime {
   jobManager: JobManager;
   remoteMixClient: RemoteMixClient;
 }
 
-const taskRuntimes = new Map<number, TaskRuntime>();
+const taskRuntimes = new Map<string, TaskRuntime>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -62,21 +60,19 @@ protocol.registerSchemesAsPrivileged([
   }
 ]);
 
-function createWindow(isTaskClone = false): BrowserWindow {
+function createWindow(): BrowserWindow {
   // 开发版不能依赖 process.cwd()：macOS 用系统 open 启动时工作目录可能不是项目根目录。
   const appRoot = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, "../..");
   const preloadPath = path.join(appRoot, "electron", "preload.cjs");
   const windowIconPath = app.isPackaged
     ? path.join(process.resourcesPath, "icon.png")
     : path.join(appRoot, "build", "icon.png");
-  const taskTitle = isTaskClone ? `医博生物混剪工具 · 任务分身 ${++taskWindowCount}` : "医博生物混剪工具";
-
   const window = new BrowserWindow({
     width: 1320,
     height: 860,
     minWidth: 760,
     minHeight: 560,
-    title: taskTitle,
+    title: "医博生物混剪工具",
     backgroundColor: "#f5f9ff",
     icon: windowIconPath,
     show: false,
@@ -90,8 +86,6 @@ function createWindow(isTaskClone = false): BrowserWindow {
   if (!mainWindow) {
     mainWindow = window;
   }
-  createTaskRuntime(window.webContents);
-
   if (process.env.VITE_DEV_SERVER_URL) {
     void window.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
@@ -106,6 +100,12 @@ function createWindow(isTaskClone = false): BrowserWindow {
     }
   });
   window.on("closed", () => {
+    const runtimePrefix = `${window.webContents.id}:`;
+    for (const runtimeKey of taskRuntimes.keys()) {
+      if (runtimeKey.startsWith(runtimePrefix)) {
+        taskRuntimes.delete(runtimeKey);
+      }
+    }
     if (mainWindow === window) {
       mainWindow = BrowserWindow.getAllWindows().find((candidate) => candidate !== window);
     }
@@ -157,26 +157,34 @@ updateManager.on("update", (snapshot) => {
   }
 });
 
-function createTaskRuntime(webContents: WebContents): TaskRuntime {
+function getRuntimeKey(webContents: WebContents, taskId: string): string {
+  return `${webContents.id}:${taskId}`;
+}
+
+function createTaskRuntime(webContents: WebContents, taskId: string): TaskRuntime {
   const jobManager = new JobManager();
   const remoteMixClient = new RemoteMixClient(() => app.getPath("userData"));
   const runtime = { jobManager, remoteMixClient };
-  taskRuntimes.set(webContents.id, runtime);
+  taskRuntimes.set(getRuntimeKey(webContents, taskId), runtime);
   jobManager.on("update", (snapshot) => {
     if (!webContents.isDestroyed()) {
-      webContents.send("job:update", snapshot);
+      webContents.send("job:update", { taskId, snapshot });
     }
   });
   remoteMixClient.on("update", (snapshot) => {
     if (!webContents.isDestroyed()) {
-      webContents.send("job:update", snapshot);
+      webContents.send("job:update", { taskId, snapshot });
     }
   });
   return runtime;
 }
 
-function getTaskRuntime(event: IpcMainInvokeEvent): TaskRuntime {
-  return taskRuntimes.get(event.sender.id) ?? createTaskRuntime(event.sender);
+function getTaskRuntime(event: IpcMainInvokeEvent, taskId: string): TaskRuntime {
+  if (!taskId || !taskId.trim()) {
+    throw new Error("任务标签无效，请新建任务标签后重试");
+  }
+  const runtimeKey = getRuntimeKey(event.sender, taskId);
+  return taskRuntimes.get(runtimeKey) ?? createTaskRuntime(event.sender, taskId);
 }
 
 function getEventWindow(event: IpcMainInvokeEvent): BrowserWindow | undefined {
@@ -184,10 +192,6 @@ function getEventWindow(event: IpcMainInvokeEvent): BrowserWindow | undefined {
 }
 
 function registerIpc(): void {
-  ipcMain.handle("task:create-window", async () => {
-    createWindow(true);
-  });
-
   ipcMain.handle("dialog:select-directory", async (event) => {
     const owner = getEventWindow(event);
     const result = owner ? await dialog.showOpenDialog(owner, {
@@ -287,27 +291,27 @@ function registerIpc(): void {
     return scanProject(projectDir, templateDraftPath);
   });
 
-  ipcMain.handle("job:start", async (event, config: MixProjectConfig) => {
-    return getTaskRuntime(event).jobManager.start(config);
+  ipcMain.handle("job:start", async (event, taskId: string, config: MixProjectConfig) => {
+    return getTaskRuntime(event, taskId).jobManager.start(config);
   });
 
-  ipcMain.handle("remote:get-settings", async (event) => getTaskRuntime(event).remoteMixClient.getSettingsView());
-  ipcMain.handle("remote:save-settings", async (event, settings: RemoteMixSettings) => getTaskRuntime(event).remoteMixClient.saveSettings(settings));
-  ipcMain.handle("remote:test-server", async (event) => getTaskRuntime(event).remoteMixClient.testConnection());
-  ipcMain.handle("remote:start", async (event, config: MixProjectConfig) => getTaskRuntime(event).remoteMixClient.start(config));
-  ipcMain.handle("remote:pause", async (event) => getTaskRuntime(event).remoteMixClient.pause());
-  ipcMain.handle("remote:resume", async (event) => getTaskRuntime(event).remoteMixClient.resume());
-  ipcMain.handle("remote:stop", async (event) => getTaskRuntime(event).remoteMixClient.stop());
-  ipcMain.handle("remote:get", async (event) => getTaskRuntime(event).remoteMixClient.getSnapshot());
-  ipcMain.handle("remote:upload-cloud-videos", async (event, videos: CloudLocalUploadVideo[]) => {
-    return getTaskRuntime(event).remoteMixClient.uploadCloudVideos(videos, await cloudClient.getPortableUploadSettings());
+  ipcMain.handle("remote:get-settings", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.getSettingsView());
+  ipcMain.handle("remote:save-settings", async (event, taskId: string, settings: RemoteMixSettings) => getTaskRuntime(event, taskId).remoteMixClient.saveSettings(settings));
+  ipcMain.handle("remote:test-server", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.testConnection());
+  ipcMain.handle("remote:start", async (event, taskId: string, config: MixProjectConfig) => getTaskRuntime(event, taskId).remoteMixClient.start(config));
+  ipcMain.handle("remote:pause", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.pause());
+  ipcMain.handle("remote:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.resume());
+  ipcMain.handle("remote:stop", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.stop());
+  ipcMain.handle("remote:get", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.getSnapshot());
+  ipcMain.handle("remote:upload-cloud-videos", async (event, taskId: string, videos: CloudLocalUploadVideo[]) => {
+    return getTaskRuntime(event, taskId).remoteMixClient.uploadCloudVideos(videos, await cloudClient.getPortableUploadSettings());
   });
 
-  ipcMain.handle("job:pause", async (event) => getTaskRuntime(event).jobManager.pause());
-  ipcMain.handle("job:resume", async (event) => getTaskRuntime(event).jobManager.resume());
-  ipcMain.handle("job:stop", async (event) => getTaskRuntime(event).jobManager.stop());
-  ipcMain.handle("job:retry-failures", async (event) => getTaskRuntime(event).jobManager.retryFailures());
-  ipcMain.handle("job:get", async (event) => getTaskRuntime(event).jobManager.getSnapshot());
+  ipcMain.handle("job:pause", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.pause());
+  ipcMain.handle("job:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.resume());
+  ipcMain.handle("job:stop", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.stop());
+  ipcMain.handle("job:retry-failures", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.retryFailures());
+  ipcMain.handle("job:get", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.getSnapshot());
 
   ipcMain.handle("shell:reveal-path", async (_event, targetPath: string) => {
     await shell.openPath(targetPath);

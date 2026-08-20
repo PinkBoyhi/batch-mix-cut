@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -37,6 +37,7 @@ import type {
   CloudVideoType,
   ExportTarget,
   ExportMode,
+  JobStatus,
   MixExecutionTarget,
   MixCombination,
   MixProjectConfig,
@@ -78,6 +79,14 @@ const emptyRemoteMixSettings: RemoteMixSettingsView = {
   hasToken: false
 };
 
+function createTaskId(): string {
+  return `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isTaskInProgress(status: JobStatus): boolean {
+  return ["queued", "running", "paused", "stopping"].includes(status);
+}
+
 interface CloudImportRow {
   localPath: string;
   videoName: string;
@@ -91,7 +100,132 @@ interface VideoPreviewState {
   subtitle?: string;
 }
 
+interface TaskTab {
+  id: string;
+  title: string;
+  status: JobStatus;
+}
+
+interface TaskWorkspaceProps {
+  taskId: string;
+  active: boolean;
+  onCreateTaskTab: () => void;
+  onTaskTitleChange: (taskId: string, title: string) => void;
+  onTaskStatusChange: (taskId: string, status: JobStatus) => void;
+}
+
 export default function App() {
+  const [tabs, setTabs] = useState<TaskTab[]>(() => [{ id: createTaskId(), title: "任务 1", status: "idle" }]);
+  const [activeTabId, setActiveTabId] = useState(() => tabs[0].id);
+  const [nextTaskNumber, setNextTaskNumber] = useState(2);
+
+  function createTaskTab() {
+    const newTab: TaskTab = {
+      id: createTaskId(),
+      title: `任务 ${nextTaskNumber}`,
+      status: "idle"
+    };
+    setTabs((currentTabs) => [...currentTabs, newTab]);
+    setActiveTabId(newTab.id);
+    setNextTaskNumber((currentNumber) => currentNumber + 1);
+  }
+
+  function closeTaskTab(taskId: string) {
+    const tabIndex = tabs.findIndex((tab) => tab.id === taskId);
+    const tab = tabs[tabIndex];
+    if (!tab || tabs.length === 1 || isTaskInProgress(tab.status)) {
+      return;
+    }
+    const nextActiveTab = tabs[tabIndex - 1] ?? tabs[tabIndex + 1];
+    setTabs((currentTabs) => currentTabs.filter((currentTab) => currentTab.id !== taskId));
+    if (activeTabId === taskId && nextActiveTab) {
+      setActiveTabId(nextActiveTab.id);
+    }
+  }
+
+  const updateTaskTitle = useCallback((taskId: string, title: string) => {
+    const nextTitle = title || "未命名任务";
+    setTabs((currentTabs) => {
+      const currentTab = currentTabs.find((tab) => tab.id === taskId);
+      if (!currentTab || currentTab.title === nextTitle) {
+        return currentTabs;
+      }
+      return currentTabs.map((tab) => (tab.id === taskId ? { ...tab, title: nextTitle } : tab));
+    });
+  }, []);
+
+  const updateTaskStatus = useCallback((taskId: string, status: JobStatus) => {
+    setTabs((currentTabs) => {
+      const currentTab = currentTabs.find((tab) => tab.id === taskId);
+      if (!currentTab || currentTab.status === status) {
+        return currentTabs;
+      }
+      return currentTabs.map((tab) => (tab.id === taskId ? { ...tab, status } : tab));
+    });
+  }, []);
+
+  return (
+    <div className="task-tabs-shell">
+      <nav className="task-tab-strip" aria-label="任务标签" role="tablist">
+        <div className="task-tab-list">
+          {tabs.map((tab) => {
+            const isActive = tab.id === activeTabId;
+            const closeDisabled = tabs.length === 1 || isTaskInProgress(tab.status);
+            return (
+              <div
+                className={`task-tab task-tab-${tab.status}${isActive ? " active" : ""}`}
+                key={tab.id}
+              >
+                <button
+                  aria-selected={isActive}
+                  className="task-tab-select"
+                  onClick={() => setActiveTabId(tab.id)}
+                  role="tab"
+                  type="button"
+                >
+                  <span className="task-tab-status" />
+                  <span className="task-tab-title">{tab.title}</span>
+                </button>
+                <button
+                  className="task-tab-close"
+                  disabled={closeDisabled}
+                  onClick={() => closeTaskTab(tab.id)}
+                  title={isTaskInProgress(tab.status) ? "任务运行中，请先停止" : "关闭任务标签"}
+                  type="button"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <button className="task-tab-add" onClick={createTaskTab} title="新建任务标签" type="button">
+          <Plus size={18} />
+        </button>
+      </nav>
+      <div className="task-tab-content">
+        {tabs.map((tab) => (
+          <TaskWorkspace
+            active={tab.id === activeTabId}
+            key={tab.id}
+            onCreateTaskTab={createTaskTab}
+            onTaskStatusChange={updateTaskStatus}
+            onTaskTitleChange={updateTaskTitle}
+            taskId={tab.id}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TaskWorkspace({
+  taskId,
+  active,
+  onCreateTaskTab,
+  onTaskTitleChange,
+  onTaskStatusChange
+}: TaskWorkspaceProps) {
   const api = window.batchMix;
   const [config, setConfig] = useState<MixProjectConfig | undefined>();
   const [combinations, setCombinations] = useState<MixCombination[]>([]);
@@ -150,24 +284,38 @@ export default function App() {
 
   useEffect(() => {
     if (!api) return;
-    return api.onJobUpdate(setJob);
-  }, [api]);
+    return api.onJobUpdate((update) => {
+      if (update.taskId === taskId) {
+        setJob(update.snapshot);
+      }
+    });
+  }, [api, taskId]);
+
+  useEffect(() => {
+    onTaskStatusChange(taskId, job.status);
+  }, [job.status, onTaskStatusChange, taskId]);
+
+  useEffect(() => {
+    if (config?.outputDir) {
+      onTaskTitleChange(taskId, basename(config.outputDir));
+    }
+  }, [config?.outputDir, onTaskTitleChange, taskId]);
 
   useEffect(() => {
     if (!api) return;
     void api
-      .getRemoteMixSettings()
+      .getRemoteMixSettings(taskId)
       .then(async (settings) => {
         setRemoteMixSettings(settings);
         setRemoteServerUrl(settings.serverUrl);
         if (settings.hasToken) {
-          const tested = await api.testRemoteMixServer();
+          const tested = await api.testRemoteMixServer(taskId);
           setRemoteMixSettings(tested);
           setRemoteStatus(tested.message);
         }
       })
       .catch((err) => setRemoteStatus(toMessage(err)));
-  }, [api]);
+  }, [api, taskId]);
 
   useEffect(() => {
     if (!api) return;
@@ -277,7 +425,7 @@ export default function App() {
       setConfig(result.config);
       setCombinations(result.combinations);
       setWarnings(result.warnings);
-      setJob(await api.getJob());
+      setJob(await api.getJob(taskId));
     } catch (err) {
       setError(toMessage(err));
     } finally {
@@ -285,16 +433,8 @@ export default function App() {
     }
   }
 
-  async function createTaskClone() {
-    if (!api) {
-      setError("当前页面没有连接到 Electron 本地能力。请使用桌面窗口操作。");
-      return;
-    }
-    try {
-      await api.createTaskWindow();
-    } catch (err) {
-      setError(toMessage(err));
-    }
+  function createTaskTab() {
+    onCreateTaskTab();
   }
 
   async function applyConfig(nextConfig: MixProjectConfig) {
@@ -423,7 +563,7 @@ export default function App() {
       setCloudImportResults([]);
       setAutoCloudImportJobId(undefined);
       setActiveMixExecutionTarget(mixExecutionTarget);
-      setJob(mixExecutionTarget === "server" ? await api.startRemoteJob(config) : await api.startJob(config));
+      setJob(mixExecutionTarget === "server" ? await api.startRemoteJob(taskId, config) : await api.startJob(taskId, config));
     } catch (err) {
       setError(toMessage(err));
     }
@@ -442,7 +582,7 @@ export default function App() {
     if (!api) return;
     setRemoteStatus("正在连接服务器...");
     try {
-      const settings = await api.saveRemoteMixSettings({ serverUrl: remoteServerUrl, token: remoteToken });
+      const settings = await api.saveRemoteMixSettings(taskId, { serverUrl: remoteServerUrl, token: remoteToken });
       setRemoteMixSettings(settings);
       setRemoteStatus(settings.message ?? "服务器配置已保存");
       if (settings.serverUrl) {
@@ -458,7 +598,7 @@ export default function App() {
     if (!api) return;
     setRemoteStatus("正在测试服务器...");
     try {
-      const settings = await api.testRemoteMixServer();
+      const settings = await api.testRemoteMixServer(taskId);
       setRemoteMixSettings(settings);
       setRemoteStatus(settings.message ?? "服务器连接正常");
     } catch (err) {
@@ -773,7 +913,9 @@ export default function App() {
     setCloudStatus(automatic ? "混剪已完成，正在上传本地成片到云管家..." : "正在上传本地成片到云管家...");
     try {
       const result =
-        activeMixExecutionTarget === "server" ? await api.uploadRemoteCloudVideos(videos) : await api.uploadCloudLocalVideos(videos);
+        activeMixExecutionTarget === "server"
+          ? await api.uploadRemoteCloudVideos(taskId, videos)
+          : await api.uploadCloudLocalVideos(videos);
       setCloudImportRequestId(result.importJob.requestId);
       setCloudImportRows((currentRows) =>
         currentRows.map((row) => {
@@ -949,7 +1091,8 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
+    <div aria-hidden={!active} className={active ? "task-tab-workspace active" : "task-tab-workspace"}>
+      <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -965,9 +1108,9 @@ export default function App() {
           <FolderOpen size={18} />
           <span>{busy ? "处理中" : "选择输出目录"}</span>
         </button>
-        <button className="secondary-action" type="button" onClick={() => void createTaskClone()} disabled={!api}>
+        <button className="secondary-action" type="button" onClick={createTaskTab}>
           <Plus size={18} />
-          <span>新建任务分身</span>
+          <span>新建任务标签</span>
         </button>
 
         {config && (
@@ -1164,7 +1307,7 @@ export default function App() {
             <button
               type="button"
               onClick={() =>
-                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.pauseRemoteJob() : api.pauseJob())) : undefined)
+                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.pauseRemoteJob(taskId) : api.pauseJob(taskId))) : undefined)
               }
               disabled={job.status !== "running"}
               title="暂停"
@@ -1174,7 +1317,7 @@ export default function App() {
             <button
               type="button"
               onClick={() =>
-                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.resumeRemoteJob() : api.resumeJob())) : undefined)
+                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.resumeRemoteJob(taskId) : api.resumeJob(taskId))) : undefined)
               }
               disabled={job.status !== "paused"}
               title="继续"
@@ -1184,7 +1327,7 @@ export default function App() {
             <button
               type="button"
               onClick={() =>
-                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.stopRemoteJob() : api.stopJob())) : undefined)
+                void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.stopRemoteJob(taskId) : api.stopJob(taskId))) : undefined)
               }
               disabled={job.status !== "queued" && job.status !== "running" && job.status !== "paused"}
               title="停止"
@@ -1193,7 +1336,7 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => void (api ? runAction(() => api.retryFailures()) : undefined)}
+              onClick={() => void (api ? runAction(() => api.retryFailures(taskId)) : undefined)}
               disabled={job.failures.length === 0 || job.status === "running"}
               title="重试失败"
             >
@@ -2150,7 +2293,8 @@ export default function App() {
           }}
         />
       )}
-    </main>
+      </main>
+    </div>
   );
 }
 

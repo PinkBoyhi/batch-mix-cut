@@ -126,6 +126,11 @@ export interface BatchJobSnapshot {
   finishedAt?: string;
 }
 
+export interface TaskJobUpdate {
+  taskId: string;
+  snapshot: BatchJobSnapshot;
+}
+
 export interface UpdateSnapshot {
   status: UpdateStatus;
   message: string;
@@ -305,7 +310,6 @@ export interface RemoteMixSettingsView {
 }
 
 export interface AppApi {
-  createTaskWindow: () => Promise<void>;
   selectDirectory: () => Promise<string | undefined>;
   selectFiles: (kind: AssetKind) => Promise<string[]>;
   selectVideoFolderFiles: () => Promise<string[]>;
@@ -313,20 +317,20 @@ export interface AppApi {
   createManualProject: (outputDir: string) => Promise<ScanResult>;
   buildCombinations: (config: MixProjectConfig) => Promise<MixCombination[]>;
   scanProject: (projectDir: string, templateDraftPath?: string) => Promise<ScanResult>;
-  startJob: (config: MixProjectConfig) => Promise<BatchJobSnapshot>;
-  startRemoteJob: (config: MixProjectConfig) => Promise<BatchJobSnapshot>;
-  pauseRemoteJob: () => Promise<BatchJobSnapshot>;
-  resumeRemoteJob: () => Promise<BatchJobSnapshot>;
-  stopRemoteJob: () => Promise<BatchJobSnapshot>;
-  getRemoteJob: () => Promise<BatchJobSnapshot>;
-  getRemoteMixSettings: () => Promise<RemoteMixSettingsView>;
-  saveRemoteMixSettings: (settings: RemoteMixSettings) => Promise<RemoteMixSettingsView>;
-  testRemoteMixServer: () => Promise<RemoteMixSettingsView>;
-  pauseJob: () => Promise<BatchJobSnapshot>;
-  resumeJob: () => Promise<BatchJobSnapshot>;
-  stopJob: () => Promise<BatchJobSnapshot>;
-  retryFailures: () => Promise<BatchJobSnapshot>;
-  getJob: () => Promise<BatchJobSnapshot>;
+  startJob: (taskId: string, config: MixProjectConfig) => Promise<BatchJobSnapshot>;
+  startRemoteJob: (taskId: string, config: MixProjectConfig) => Promise<BatchJobSnapshot>;
+  pauseRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  resumeRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  stopRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  getRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  getRemoteMixSettings: (taskId: string) => Promise<RemoteMixSettingsView>;
+  saveRemoteMixSettings: (taskId: string, settings: RemoteMixSettings) => Promise<RemoteMixSettingsView>;
+  testRemoteMixServer: (taskId: string) => Promise<RemoteMixSettingsView>;
+  pauseJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  resumeJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  stopJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  retryFailures: (taskId: string) => Promise<BatchJobSnapshot>;
+  getJob: (taskId: string) => Promise<BatchJobSnapshot>;
   revealPath: (targetPath: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   checkForUpdates: () => Promise<UpdateSnapshot>;
@@ -348,11 +352,11 @@ export interface AppApi {
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => Promise<string>;
   importCloudVideos: (videos: CloudImportVideo[]) => Promise<CloudImportJob>;
   uploadCloudLocalVideos: (videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
-  uploadRemoteCloudVideos: (videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
+  uploadRemoteCloudVideos: (taskId: string, videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
   queryCloudImportResult: (
     requestId: string,
     pageNo?: number,
     pageSize?: number
   ) => Promise<CloudPage<CloudImportResult>>;
-  onJobUpdate: (callback: (snapshot: BatchJobSnapshot) => void) => () => void;
+  onJobUpdate: (callback: (update: TaskJobUpdate) => void) => () => void;
 }

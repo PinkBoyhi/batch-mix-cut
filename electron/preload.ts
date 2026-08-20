@@ -1,17 +1,16 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   AppApi,
-  BatchJobSnapshot,
   CloudImportVideo,
   CloudLocalUploadVideo,
   CloudSettings,
   CloudVideoListQuery,
   MixProjectConfig,
+  TaskJobUpdate,
   UpdateSnapshot
 } from "../src/shared/types.js";
 
 const api: AppApi = {
-  createTaskWindow: () => ipcRenderer.invoke("task:create-window"),
   selectDirectory: () => ipcRenderer.invoke("dialog:select-directory"),
   selectFiles: (kind) => ipcRenderer.invoke("dialog:select-files", kind),
   selectVideoFolderFiles: () => ipcRenderer.invoke("dialog:select-video-folder-files"),
@@ -19,20 +18,20 @@ const api: AppApi = {
   createManualProject: (outputDir) => ipcRenderer.invoke("project:create-manual", outputDir),
   buildCombinations: (config) => ipcRenderer.invoke("project:build-combinations", config),
   scanProject: (projectDir: string, templateDraftPath?: string) => ipcRenderer.invoke("project:scan", projectDir, templateDraftPath),
-  startJob: (config: MixProjectConfig) => ipcRenderer.invoke("job:start", config),
-  startRemoteJob: (config: MixProjectConfig) => ipcRenderer.invoke("remote:start", config),
-  pauseRemoteJob: () => ipcRenderer.invoke("remote:pause"),
-  resumeRemoteJob: () => ipcRenderer.invoke("remote:resume"),
-  stopRemoteJob: () => ipcRenderer.invoke("remote:stop"),
-  getRemoteJob: () => ipcRenderer.invoke("remote:get"),
-  getRemoteMixSettings: () => ipcRenderer.invoke("remote:get-settings"),
-  saveRemoteMixSettings: (settings) => ipcRenderer.invoke("remote:save-settings", settings),
-  testRemoteMixServer: () => ipcRenderer.invoke("remote:test-server"),
-  pauseJob: () => ipcRenderer.invoke("job:pause"),
-  resumeJob: () => ipcRenderer.invoke("job:resume"),
-  stopJob: () => ipcRenderer.invoke("job:stop"),
-  retryFailures: () => ipcRenderer.invoke("job:retry-failures"),
-  getJob: () => ipcRenderer.invoke("job:get"),
+  startJob: (taskId: string, config: MixProjectConfig) => ipcRenderer.invoke("job:start", taskId, config),
+  startRemoteJob: (taskId: string, config: MixProjectConfig) => ipcRenderer.invoke("remote:start", taskId, config),
+  pauseRemoteJob: (taskId: string) => ipcRenderer.invoke("remote:pause", taskId),
+  resumeRemoteJob: (taskId: string) => ipcRenderer.invoke("remote:resume", taskId),
+  stopRemoteJob: (taskId: string) => ipcRenderer.invoke("remote:stop", taskId),
+  getRemoteJob: (taskId: string) => ipcRenderer.invoke("remote:get", taskId),
+  getRemoteMixSettings: (taskId: string) => ipcRenderer.invoke("remote:get-settings", taskId),
+  saveRemoteMixSettings: (taskId, settings) => ipcRenderer.invoke("remote:save-settings", taskId, settings),
+  testRemoteMixServer: (taskId: string) => ipcRenderer.invoke("remote:test-server", taskId),
+  pauseJob: (taskId: string) => ipcRenderer.invoke("job:pause", taskId),
+  resumeJob: (taskId: string) => ipcRenderer.invoke("job:resume", taskId),
+  stopJob: (taskId: string) => ipcRenderer.invoke("job:stop", taskId),
+  retryFailures: (taskId: string) => ipcRenderer.invoke("job:retry-failures", taskId),
+  getJob: (taskId: string) => ipcRenderer.invoke("job:get", taskId),
   revealPath: (targetPath: string) => ipcRenderer.invoke("shell:reveal-path", targetPath),
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
@@ -55,11 +54,12 @@ const api: AppApi = {
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => ipcRenderer.invoke("cloud:get-raw-url", videoId, isInner),
   importCloudVideos: (videos: CloudImportVideo[]) => ipcRenderer.invoke("cloud:import-videos", videos),
   uploadCloudLocalVideos: (videos: CloudLocalUploadVideo[]) => ipcRenderer.invoke("cloud:upload-local-videos", videos),
-  uploadRemoteCloudVideos: (videos: CloudLocalUploadVideo[]) => ipcRenderer.invoke("remote:upload-cloud-videos", videos),
+  uploadRemoteCloudVideos: (taskId: string, videos: CloudLocalUploadVideo[]) =>
+    ipcRenderer.invoke("remote:upload-cloud-videos", taskId, videos),
   queryCloudImportResult: (requestId: string, pageNo?: number, pageSize?: number) =>
     ipcRenderer.invoke("cloud:query-import-result", requestId, pageNo, pageSize),
-  onJobUpdate: (callback: (snapshot: BatchJobSnapshot) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, snapshot: BatchJobSnapshot) => callback(snapshot);
+  onJobUpdate: (callback: (update: TaskJobUpdate) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, update: TaskJobUpdate) => callback(update);
     ipcRenderer.on("job:update", listener);
     return () => ipcRenderer.removeListener("job:update", listener);
   }
