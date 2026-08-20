@@ -242,11 +242,11 @@ export default function App() {
   ]);
 
   const progress = job.total > 0 ? Math.round(((job.completed + job.failed) / job.total) * 100) : 0;
+  const hasActiveTask = ["queued", "running", "paused", "stopping"].includes(job.status);
   const canStart =
     !!config &&
     combinations.length > 0 &&
-    job.status !== "running" &&
-    job.status !== "paused" &&
+    !hasActiveTask &&
     (mixExecutionTarget === "local" || (remoteMixSettings.ok === true && remoteMixSettings.hasToken));
   const speedModeEnabled = Boolean(config && config.normalizeLoudness === false && config.videoProfile.preset === "veryfast");
   const slotSummary = useMemo(() => {
@@ -282,6 +282,18 @@ export default function App() {
       setError(toMessage(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function createTaskClone() {
+    if (!api) {
+      setError("当前页面没有连接到 Electron 本地能力。请使用桌面窗口操作。");
+      return;
+    }
+    try {
+      await api.createTaskWindow();
+    } catch (err) {
+      setError(toMessage(err));
     }
   }
 
@@ -953,6 +965,10 @@ export default function App() {
           <FolderOpen size={18} />
           <span>{busy ? "处理中" : "选择输出目录"}</span>
         </button>
+        <button className="secondary-action" type="button" onClick={() => void createTaskClone()} disabled={!api}>
+          <Plus size={18} />
+          <span>新建任务分身</span>
+        </button>
 
         {config && (
           <section className="panel">
@@ -1170,7 +1186,7 @@ export default function App() {
               onClick={() =>
                 void (api ? runAction(() => (activeMixExecutionTarget === "server" ? api.stopRemoteJob() : api.stopJob())) : undefined)
               }
-              disabled={job.status !== "running" && job.status !== "paused"}
+              disabled={job.status !== "queued" && job.status !== "running" && job.status !== "paused"}
               title="停止"
             >
               <Square size={17} />

@@ -6,7 +6,7 @@ export type MixExecutionTarget = "local" | "server";
 
 export type CloudVideoRotation = "none" | "clockwise90" | "counterClockwise90" | "rotate180";
 
-export type JobStatus = "idle" | "running" | "paused" | "stopping" | "completed" | "failed";
+export type JobStatus = "idle" | "queued" | "running" | "paused" | "stopping" | "completed" | "failed";
 
 export type UpdateStatus =
   | "idle"
@@ -305,6 +305,7 @@ export interface RemoteMixSettingsView {
 }
 
 export interface AppApi {
+  createTaskWindow: () => Promise<void>;
   selectDirectory: () => Promise<string | undefined>;
   selectFiles: (kind: AssetKind) => Promise<string[]>;
   selectVideoFolderFiles: () => Promise<string[]>;

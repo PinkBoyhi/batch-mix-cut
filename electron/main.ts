@@ -1,4 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  protocol,
+  shell,
+  type IpcMainInvokeEvent,
+  type OpenDialogOptions,
+  type WebContents
+} from "electron";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -23,15 +34,21 @@ import type {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const jobManager = new JobManager();
 const cloudClient = new YunguanjiaClient(() => app.getPath("userData"));
-const remoteMixClient = new RemoteMixClient(() => app.getPath("userData"));
 const updateManager = new UpdateManager(app.getVersion());
 const DEFAULT_CLOUD_LOGIN_URL = "https://sucaiwang.zhishangsoft.com/#/classification";
 const DEFAULT_CLOUD_UPLOAD_BASE_URL = "https://sucaiwang-api-elb.zhishangsoft.com";
 const PREVIEW_PROTOCOL = "batchmix-preview";
 
 let mainWindow: BrowserWindow | undefined;
+let taskWindowCount = 0;
+
+interface TaskRuntime {
+  jobManager: JobManager;
+  remoteMixClient: RemoteMixClient;
+}
+
+const taskRuntimes = new Map<number, TaskRuntime>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -45,20 +62,21 @@ protocol.registerSchemesAsPrivileged([
   }
 ]);
 
-function createWindow(): void {
+function createWindow(isTaskClone = false): BrowserWindow {
   // 开发版不能依赖 process.cwd()：macOS 用系统 open 启动时工作目录可能不是项目根目录。
   const appRoot = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, "../..");
   const preloadPath = path.join(appRoot, "electron", "preload.cjs");
   const windowIconPath = app.isPackaged
     ? path.join(process.resourcesPath, "icon.png")
     : path.join(appRoot, "build", "icon.png");
+  const taskTitle = isTaskClone ? `医博生物混剪工具 · 任务分身 ${++taskWindowCount}` : "医博生物混剪工具";
 
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1320,
     height: 860,
     minWidth: 760,
     minHeight: 560,
-    title: "医博生物混剪工具",
+    title: taskTitle,
     backgroundColor: "#f5f9ff",
     icon: windowIconPath,
     show: false,
@@ -69,19 +87,30 @@ function createWindow(): void {
     }
   });
 
+  if (!mainWindow) {
+    mainWindow = window;
+  }
+  createTaskRuntime(window.webContents);
+
   if (process.env.VITE_DEV_SERVER_URL) {
-    void mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+    void window.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    void mainWindow.loadFile(path.join(__dirname, "../../dist/index.html"));
+    void window.loadFile(path.join(__dirname, "../../dist/index.html"));
   }
 
-  mainWindow.once("ready-to-show", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
+  window.once("ready-to-show", () => {
+    window.show();
+    window.focus();
     if (process.platform === "darwin") {
       app.focus({ steal: true });
     }
   });
+  window.on("closed", () => {
+    if (mainWindow === window) {
+      mainWindow = BrowserWindow.getAllWindows().find((candidate) => candidate !== window);
+    }
+  });
+  return window;
 }
 
 app.whenReady().then(() => {
@@ -120,41 +149,72 @@ app.on("window-all-closed", () => {
   }
 });
 
-jobManager.on("update", (snapshot) => {
-  mainWindow?.webContents.send("job:update", snapshot);
-});
-
 updateManager.on("update", (snapshot) => {
-  mainWindow?.webContents.send("update:status", snapshot);
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send("update:status", snapshot);
+    }
+  }
 });
 
-remoteMixClient.on("update", (snapshot) => {
-  mainWindow?.webContents.send("job:update", snapshot);
-});
+function createTaskRuntime(webContents: WebContents): TaskRuntime {
+  const jobManager = new JobManager();
+  const remoteMixClient = new RemoteMixClient(() => app.getPath("userData"));
+  const runtime = { jobManager, remoteMixClient };
+  taskRuntimes.set(webContents.id, runtime);
+  jobManager.on("update", (snapshot) => {
+    if (!webContents.isDestroyed()) {
+      webContents.send("job:update", snapshot);
+    }
+  });
+  remoteMixClient.on("update", (snapshot) => {
+    if (!webContents.isDestroyed()) {
+      webContents.send("job:update", snapshot);
+    }
+  });
+  return runtime;
+}
+
+function getTaskRuntime(event: IpcMainInvokeEvent): TaskRuntime {
+  return taskRuntimes.get(event.sender.id) ?? createTaskRuntime(event.sender);
+}
+
+function getEventWindow(event: IpcMainInvokeEvent): BrowserWindow | undefined {
+  return BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+}
 
 function registerIpc(): void {
-  ipcMain.handle("dialog:select-directory", async () => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
+  ipcMain.handle("task:create-window", async () => {
+    createWindow(true);
+  });
+
+  ipcMain.handle("dialog:select-directory", async (event) => {
+    const owner = getEventWindow(event);
+    const result = owner ? await dialog.showOpenDialog(owner, {
       properties: ["openDirectory", "createDirectory"]
-    });
+    }) : await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
     return result.canceled ? undefined : result.filePaths[0];
   });
 
-  ipcMain.handle("dialog:select-files", async (_event, kind: AssetKind) => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
+  ipcMain.handle("dialog:select-files", async (event, kind: AssetKind) => {
+    const options: OpenDialogOptions = {
       properties: ["openFile", "multiSelections"],
       filters:
         kind === "audio"
           ? [{ name: "音频素材", extensions: ["mp3", "m4a", "aac", "wav", "flac", "ogg"] }]
           : [{ name: "视频素材", extensions: ["mp4", "mov", "m4v", "mkv", "avi", "webm"] }]
-    });
+    };
+    const owner = getEventWindow(event);
+    const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     return result.canceled ? [] : result.filePaths;
   });
 
-  ipcMain.handle("dialog:select-video-folder-files", async () => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
+  ipcMain.handle("dialog:select-video-folder-files", async (event) => {
+    const options: OpenDialogOptions = {
       properties: ["openDirectory"]
-    });
+    };
+    const owner = getEventWindow(event);
+    const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     if (result.canceled || !result.filePaths[0]) {
       return [];
     }
@@ -227,27 +287,27 @@ function registerIpc(): void {
     return scanProject(projectDir, templateDraftPath);
   });
 
-  ipcMain.handle("job:start", async (_event, config: MixProjectConfig) => {
-    return jobManager.start(config);
+  ipcMain.handle("job:start", async (event, config: MixProjectConfig) => {
+    return getTaskRuntime(event).jobManager.start(config);
   });
 
-  ipcMain.handle("remote:get-settings", async () => remoteMixClient.getSettingsView());
-  ipcMain.handle("remote:save-settings", async (_event, settings: RemoteMixSettings) => remoteMixClient.saveSettings(settings));
-  ipcMain.handle("remote:test-server", async () => remoteMixClient.testConnection());
-  ipcMain.handle("remote:start", async (_event, config: MixProjectConfig) => remoteMixClient.start(config));
-  ipcMain.handle("remote:pause", async () => remoteMixClient.pause());
-  ipcMain.handle("remote:resume", async () => remoteMixClient.resume());
-  ipcMain.handle("remote:stop", async () => remoteMixClient.stop());
-  ipcMain.handle("remote:get", async () => remoteMixClient.getSnapshot());
-  ipcMain.handle("remote:upload-cloud-videos", async (_event, videos: CloudLocalUploadVideo[]) => {
-    return remoteMixClient.uploadCloudVideos(videos, await cloudClient.getPortableUploadSettings());
+  ipcMain.handle("remote:get-settings", async (event) => getTaskRuntime(event).remoteMixClient.getSettingsView());
+  ipcMain.handle("remote:save-settings", async (event, settings: RemoteMixSettings) => getTaskRuntime(event).remoteMixClient.saveSettings(settings));
+  ipcMain.handle("remote:test-server", async (event) => getTaskRuntime(event).remoteMixClient.testConnection());
+  ipcMain.handle("remote:start", async (event, config: MixProjectConfig) => getTaskRuntime(event).remoteMixClient.start(config));
+  ipcMain.handle("remote:pause", async (event) => getTaskRuntime(event).remoteMixClient.pause());
+  ipcMain.handle("remote:resume", async (event) => getTaskRuntime(event).remoteMixClient.resume());
+  ipcMain.handle("remote:stop", async (event) => getTaskRuntime(event).remoteMixClient.stop());
+  ipcMain.handle("remote:get", async (event) => getTaskRuntime(event).remoteMixClient.getSnapshot());
+  ipcMain.handle("remote:upload-cloud-videos", async (event, videos: CloudLocalUploadVideo[]) => {
+    return getTaskRuntime(event).remoteMixClient.uploadCloudVideos(videos, await cloudClient.getPortableUploadSettings());
   });
 
-  ipcMain.handle("job:pause", async () => jobManager.pause());
-  ipcMain.handle("job:resume", async () => jobManager.resume());
-  ipcMain.handle("job:stop", async () => jobManager.stop());
-  ipcMain.handle("job:retry-failures", async () => jobManager.retryFailures());
-  ipcMain.handle("job:get", async () => jobManager.getSnapshot());
+  ipcMain.handle("job:pause", async (event) => getTaskRuntime(event).jobManager.pause());
+  ipcMain.handle("job:resume", async (event) => getTaskRuntime(event).jobManager.resume());
+  ipcMain.handle("job:stop", async (event) => getTaskRuntime(event).jobManager.stop());
+  ipcMain.handle("job:retry-failures", async (event) => getTaskRuntime(event).jobManager.retryFailures());
+  ipcMain.handle("job:get", async (event) => getTaskRuntime(event).jobManager.getSnapshot());
 
   ipcMain.handle("shell:reveal-path", async (_event, targetPath: string) => {
     await shell.openPath(targetPath);
@@ -267,7 +327,7 @@ function registerIpc(): void {
   ipcMain.handle("cloud:get-settings", async () => cloudClient.getSettingsView());
   ipcMain.handle("cloud:save-settings", async (_event, settings: CloudSettings) => cloudClient.saveSettings(settings));
   ipcMain.handle("cloud:test-connection", async () => cloudClient.testConnection());
-  ipcMain.handle("cloud:capture-upload-token", async (_event, loginUrl?: string) => captureCloudUploadToken(loginUrl));
+  ipcMain.handle("cloud:capture-upload-token", async (event, loginUrl?: string) => captureCloudUploadToken(loginUrl, getEventWindow(event)));
   ipcMain.handle("cloud:verify-phone", async (_event, phone: string) => cloudClient.verifyPhone(phone));
   ipcMain.handle("cloud:list-videos", async (_event, query: CloudVideoListQuery) => cloudClient.listVideos(query));
   ipcMain.handle("cloud:list-video-types", async (_event, videoType?: number) => cloudClient.listVideoTypes(videoType));
@@ -284,7 +344,7 @@ function registerIpc(): void {
   });
 }
 
-async function captureCloudUploadToken(loginUrl?: string) {
+async function captureCloudUploadToken(loginUrl?: string, parentWindow?: BrowserWindow) {
   const settings = await cloudClient.getSettingsView();
   const startUrl = normalizeLoginUrl(loginUrl || DEFAULT_CLOUD_LOGIN_URL);
 
@@ -293,7 +353,7 @@ async function captureCloudUploadToken(loginUrl?: string) {
       width: 1180,
       height: 820,
       title: "登录云管家以自动获取上传授权",
-      parent: mainWindow,
+      parent: parentWindow ?? mainWindow,
       modal: false,
       show: true,
       webPreferences: {

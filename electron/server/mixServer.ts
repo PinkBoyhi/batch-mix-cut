@@ -17,6 +17,7 @@ interface ServerJob {
   snapshot: BatchJobSnapshot;
   config: MixProjectConfig;
   createdAt: string;
+  started: boolean;
 }
 
 const host = readArg("--host", process.env.MIX_SERVER_HOST ?? "0.0.0.0");
@@ -24,8 +25,10 @@ const port = Number(readArg("--port", process.env.MIX_SERVER_PORT ?? "8787"));
 const workspaceRoot = path.resolve(readArg("--workspace", process.env.MIX_SERVER_WORKSPACE ?? path.join(process.cwd(), "mix-server-workspace")));
 const allowAnyPath = process.env.MIX_SERVER_ALLOW_ANY_PATH === "1";
 const maxUploadBytes = Number(process.env.MIX_SERVER_MAX_UPLOAD_MB ?? "20480") * 1024 * 1024;
+const maxConcurrentJobs = Math.max(1, Number(process.env.MIX_SERVER_MAX_CONCURRENT_JOBS ?? "2") || 2);
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
 const jobs = new Map<string, ServerJob>();
+let dispatchingJobs = false;
 
 async function main(): Promise<void> {
   await fs.mkdir(path.join(workspaceRoot, "uploads"), { recursive: true });
@@ -68,7 +71,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       service: "yibo-batch-mix-server",
       workspaceRoot,
       authRequired: true,
-      jobs: jobs.size
+      jobs: jobs.size,
+      activeJobs: countActiveJobs(),
+      queuedJobs: countQueuedJobs(),
+      maxConcurrentJobs
     });
     return;
   }
@@ -148,18 +154,37 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     if (request.method === "POST" && action === "pause") {
+      if (!job.started) {
+        sendJson(response, 200, { ok: true, snapshot: job.snapshot });
+        return;
+      }
       job.snapshot = await job.manager.pause();
       sendJson(response, 200, { ok: true, snapshot: job.snapshot });
       return;
     }
 
     if (request.method === "POST" && action === "resume") {
+      if (!job.started) {
+        sendJson(response, 200, { ok: true, snapshot: job.snapshot });
+        return;
+      }
       job.snapshot = await job.manager.resume();
       sendJson(response, 200, { ok: true, snapshot: job.snapshot });
       return;
     }
 
     if (request.method === "POST" && action === "stop") {
+      if (!job.started) {
+        job.snapshot = {
+          ...job.snapshot,
+          status: "idle",
+          message: "已从服务器等待队列移除",
+          finishedAt: new Date().toISOString()
+        };
+        await dispatchQueuedJobs();
+        sendJson(response, 200, { ok: true, snapshot: job.snapshot });
+        return;
+      }
       job.snapshot = await job.manager.stop();
       sendJson(response, 200, { ok: true, snapshot: job.snapshot });
       return;
@@ -201,16 +226,69 @@ async function startJob(config: MixProjectConfig): Promise<ServerJob> {
   const job: ServerJob = {
     id,
     manager,
-    snapshot: manager.getSnapshot(),
+    snapshot: {
+      id,
+      status: "queued",
+      total: 0,
+      completed: 0,
+      failed: 0,
+      message: "正在等待服务器分身",
+      failures: [],
+      startedAt: new Date().toISOString()
+    },
     config,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    started: false
   };
   jobs.set(id, job);
   manager.on("update", (snapshot: BatchJobSnapshot) => {
     job.snapshot = snapshot;
+    if (isTerminalStatus(snapshot.status)) {
+      void dispatchQueuedJobs();
+    }
   });
-  job.snapshot = await manager.start(config);
+  await dispatchQueuedJobs();
   return job;
+}
+
+async function dispatchQueuedJobs(): Promise<void> {
+  if (dispatchingJobs) {
+    return;
+  }
+  dispatchingJobs = true;
+  try {
+    while (countActiveJobs() < maxConcurrentJobs) {
+      const nextJob = Array.from(jobs.values()).find((job) => !job.started && job.snapshot.status === "queued");
+      if (!nextJob) {
+        return;
+      }
+      nextJob.started = true;
+      try {
+        nextJob.snapshot = await nextJob.manager.start(nextJob.config);
+      } catch (error) {
+        nextJob.snapshot = {
+          ...nextJob.snapshot,
+          status: "failed",
+          message: error instanceof Error ? error.message : String(error),
+          finishedAt: new Date().toISOString()
+        };
+      }
+    }
+  } finally {
+    dispatchingJobs = false;
+  }
+}
+
+function countActiveJobs(): number {
+  return Array.from(jobs.values()).filter((job) => job.started && !isTerminalStatus(job.snapshot.status)).length;
+}
+
+function countQueuedJobs(): number {
+  return Array.from(jobs.values()).filter((job) => !job.started && job.snapshot.status === "queued").length;
+}
+
+function isTerminalStatus(status: BatchJobSnapshot["status"]): boolean {
+  return status === "idle" || status === "completed" || status === "failed";
 }
 
 function readArg(name: string, fallback: string): string {

@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const api = {
+  createTaskWindow: () => ipcRenderer.invoke("task:create-window"),
   selectDirectory: () => ipcRenderer.invoke("dialog:select-directory"),
   selectFiles: (kind) => ipcRenderer.invoke("dialog:select-files", kind),
   selectVideoFolderFiles: () => ipcRenderer.invoke("dialog:select-video-folder-files"),

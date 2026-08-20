@@ -11,6 +11,7 @@ import type {
 } from "../src/shared/types.js";
 
 const api: AppApi = {
+  createTaskWindow: () => ipcRenderer.invoke("task:create-window"),
   selectDirectory: () => ipcRenderer.invoke("dialog:select-directory"),
   selectFiles: (kind) => ipcRenderer.invoke("dialog:select-files", kind),
   selectVideoFolderFiles: () => ipcRenderer.invoke("dialog:select-video-folder-files"),
