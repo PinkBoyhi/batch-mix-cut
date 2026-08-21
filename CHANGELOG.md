@@ -1,5 +1,11 @@
 # 更新日志
 
+## 0.1.29
+
+- 修复 macOS GitHub Actions 打包：未配置 Apple Developer ID 证书时不再传入空签名变量，避免 electron-builder 误触发签名失败。
+- Release 将重新生成 macOS arm64 DMG/ZIP 包；未签名包仍可能被 Gatekeeper 拦截，正式分发仍需要 Apple Developer ID 签名和公证。
+- 保留 0.1.28 的服务器混剪回传本机、本机统一上传云管家的逻辑。
+
 ## 0.1.28
 
 - 服务器混剪完成后先把 MP4 成片下载回本机输出目录，再由本机统一上传云管家。
