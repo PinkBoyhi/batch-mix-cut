@@ -67,6 +67,7 @@ jobs:
   build-mac:
     needs: metadata
     runs-on: macos-latest
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,6 +107,7 @@ jobs:
             release/*.zip.blockmap
 
   publish-release:
+    if: ${{ always() && needs.build-windows.result == 'success' }}
     needs:
       - metadata
       - build-windows

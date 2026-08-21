@@ -13,7 +13,7 @@ MIX_SERVER_MAX_CONCURRENT_JOBS=2 \
 pnpm server -- --workspace /home/fczj/mix-work
 ```
 
-## 升级到 0.1.27 及以上
+## 升级到 0.1.28 及以上
 
 服务器混剪节点只负责混剪和提供成片下载；云管家上传统一由桌面端在本机执行。进入服务器上的本项目代码目录后执行：
 
