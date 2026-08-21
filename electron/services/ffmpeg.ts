@@ -41,13 +41,15 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     }
 
     const videoFilters = videoAssets.map((_, index) => {
-      return `[${index}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${index}]`;
+      return `[${index}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS,fps=30,format=yuv420p[v${index}]`;
     });
     const audioFilters = videoAssets.map((asset, index) => {
       if (config.sourceVolume > 0 && asset.hasAudio) {
         const gainDb = sourceLoudness[index]?.gainDb ?? 0;
         const volumeFilters = [
           "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo",
+          "aresample=async=1:first_pts=0",
+          "asetpts=PTS-STARTPTS",
           `volume=${config.sourceVolume}`,
           gainDb !== 0 ? `volume=${gainDb.toFixed(2)}dB` : undefined
         ].filter(Boolean);
@@ -78,6 +80,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       const label = `abgm${trackIndex}`;
       const bgmFilters = [
         "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo",
+        "aresample=async=1:first_pts=0",
         `atrim=duration=${bgmRange.durationSeconds.toFixed(3)}`,
         "asetpts=PTS-STARTPTS",
         fadeInDuration > 0 ? `afade=t=in:st=0:d=${fadeInDuration.toFixed(3)}` : undefined,
