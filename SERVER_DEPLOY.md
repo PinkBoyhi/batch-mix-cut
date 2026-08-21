@@ -13,7 +13,7 @@ MIX_SERVER_MAX_CONCURRENT_JOBS=2 \
 pnpm server -- --workspace /home/fczj/mix-work
 ```
 
-## 升级到 0.1.25
+## 升级到 0.1.25 及以上
 
 服务器混剪后直传云管家的路径校验在服务器端执行，因此桌面端升级后，服务器也必须同步更新。进入服务器上的本项目代码目录后执行：
 
