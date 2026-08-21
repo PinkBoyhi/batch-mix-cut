@@ -287,6 +287,11 @@ export interface CloudLocalUploadJob {
     videoName: string;
     url: string;
   }>;
+  skipped?: Array<{
+    localPath: string;
+    videoName: string;
+    reason: string;
+  }>;
   importJob: CloudImportJob;
 }
 

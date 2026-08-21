@@ -8,8 +8,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { scanProject } from "../services/projectScanner.js";
 import { JobManager } from "../services/jobManager.js";
 import { YunguanjiaClient } from "../services/yunguanjiaClient.js";
-import type { BatchJobSnapshot, MixProjectConfig } from "../../src/shared/types.js";
-import type { CloudLocalUploadVideo, CloudSettings } from "../../src/shared/types.js";
+import type { BatchJobSnapshot, CloudLocalUploadJob, CloudLocalUploadVideo, CloudSettings, MixProjectConfig } from "../../src/shared/types.js";
 
 interface ServerJob {
   id: string;
@@ -205,13 +204,22 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
     if (request.method === "POST" && action === "cloud" && rest === "upload") {
       const body = await readJson<{ settings: CloudSettings; videos: CloudLocalUploadVideo[] }>(request);
+      if (job.snapshot.status !== "completed") {
+        sendJson(response, 409, { ok: false, error: "服务器混剪任务尚未完成，暂时不能上传成片" });
+        return;
+      }
       const client = new YunguanjiaClient(() => path.join(workspaceRoot, ".cloud"));
       await client.saveSettings(body.settings);
-      const videos = body.videos.map((video) => ({
-        ...video,
-        localPath: resolveJobOutputPath(job, video.localPath)
-      }));
-      const result = await client.uploadLocalVideos(videos);
+      const uploadPlan = await resolveCloudUploadVideos(path.join(job.config.outputDir, "videos"), body.videos);
+      const uploadedResult = await client.uploadLocalVideos(uploadPlan.videos);
+      const result: CloudLocalUploadJob = {
+        ...uploadedResult,
+        uploaded: uploadedResult.uploaded.map((uploaded) => ({
+          ...uploaded,
+          localPath: uploadPlan.originalPathByResolvedPath.get(uploaded.localPath) ?? uploaded.localPath
+        })),
+        skipped: uploadPlan.skipped
+      };
       sendJson(response, 200, { ok: true, result });
       return;
     }
@@ -448,15 +456,43 @@ async function sendFile(response: ServerResponse, filePath: string): Promise<voi
   });
 }
 
-function resolveJobOutputPath(job: ServerJob, requestedPath: string): string {
-  if (requestedPath && path.isAbsolute(requestedPath)) {
-    assertAllowedPath(requestedPath);
-    return requestedPath;
+export interface CloudUploadPlan {
+  videos: CloudLocalUploadVideo[];
+  originalPathByResolvedPath: Map<string, string>;
+  skipped: NonNullable<CloudLocalUploadJob["skipped"]>;
+}
+
+export async function resolveCloudUploadVideos(outputDir: string, requestedVideos: CloudLocalUploadVideo[]): Promise<CloudUploadPlan> {
+  const outputFiles = await listOutputVideos(outputDir);
+  const filesByName = new Map(outputFiles.map((file) => [file.name, file.path]));
+  const videos: CloudLocalUploadVideo[] = [];
+  const originalPathByResolvedPath = new Map<string, string>();
+  const skipped: NonNullable<CloudLocalUploadJob["skipped"]> = [];
+
+  for (const video of requestedVideos) {
+    const fileName = safeSegment(fileNameFromAnyPlatformPath(video.localPath));
+    const resolvedPath = filesByName.get(fileName);
+    if (!resolvedPath) {
+      skipped.push({
+        localPath: video.localPath,
+        videoName: video.videoName,
+        reason: "服务器未找到对应的已生成 MP4 成片"
+      });
+      continue;
+    }
+    videos.push({ ...video, localPath: resolvedPath });
+    originalPathByResolvedPath.set(resolvedPath, video.localPath);
   }
-  const fileName = safeSegment(path.basename(requestedPath || ""));
-  const resolved = path.join(job.config.outputDir, "videos", fileName);
-  assertAllowedPath(resolved);
-  return resolved;
+
+  if (videos.length === 0) {
+    throw new Error(`服务器没有找到可上传的 MP4 成片。实际生成 ${outputFiles.length} 个，匹配到 0 个；请检查导出方式是否包含视频。`);
+  }
+
+  return { videos, originalPathByResolvedPath, skipped };
+}
+
+function fileNameFromAnyPlatformPath(filePath: string): string {
+  return filePath.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

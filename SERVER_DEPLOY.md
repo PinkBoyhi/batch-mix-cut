@@ -13,6 +13,18 @@ MIX_SERVER_MAX_CONCURRENT_JOBS=2 \
 pnpm server -- --workspace /home/fczj/mix-work
 ```
 
+## 升级到 0.1.25
+
+服务器混剪后直传云管家的路径校验在服务器端执行，因此桌面端升级后，服务器也必须同步更新。进入服务器上的本项目代码目录后执行：
+
+```bash
+git pull --ff-only
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+然后使用你原来的方式重启 `pnpm server` 服务（例如 systemd、pm2 或启动脚本）。新版本只会上传当前任务 `outputs/videos/` 中真实生成的 MP4；任务中失败的组合会被自动跳过，不会再因不存在的文件中断整批发布。
+
 启动日志会打印访问 Token，调用除 `/health` 外的接口时需要带请求头：
 
 ```bash

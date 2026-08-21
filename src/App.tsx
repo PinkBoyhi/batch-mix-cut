@@ -341,10 +341,22 @@ function TaskWorkspace({
     if (!config || job.status !== "completed") {
       return;
     }
-    const rows = buildCloudImportRows(combinations, cloudPublicUrlPrefix);
+    const failedCombinationIds = new Set(job.failures.map((failure) => failure.combinationId));
+    const completedCombinations = combinations.filter((combination) => !failedCombinationIds.has(combination.id));
+    const skippedCombinationCount = combinations.length - completedCombinations.length;
+    const skippedSummary = skippedCombinationCount > 0 ? `；已跳过 ${skippedCombinationCount} 个失败组合` : "";
+    const rows = buildCloudImportRows(completedCombinations, cloudPublicUrlPrefix);
     setCloudImportRows(rows);
+    if (config.exportMode === "draft") {
+      setCloudStatus(`混剪已完成，但当前只导出剪映草稿，没有可发布的 MP4${skippedSummary}`);
+      return;
+    }
+    if (rows.length === 0) {
+      setCloudStatus(`混剪已结束，但没有可发布的 MP4 成片${skippedSummary}`);
+      return;
+    }
     if (config.exportTarget === "local") {
-      setCloudStatus("混剪已完成；可在发布页选择上传云管家，或点击本地下载打开成片目录。");
+      setCloudStatus(`混剪已完成${skippedSummary}；可在发布页选择上传云管家，或点击本地下载打开成片目录。`);
       return;
     }
     if (autoCloudImportJobId === job.id) {
@@ -925,8 +937,8 @@ function TaskWorkspace({
       );
       setCloudStatus(
         result.importJob.errorList.length > 0
-          ? `已上传 ${result.uploaded.length} 个本地成片，提交导入后有 ${result.importJob.errorList.length} 条校验错误：${formatImportErrors(result.importJob.errorList)}`
-          : `已上传 ${result.uploaded.length} 个本地成片，并提交云管家导入`
+          ? `已上传 ${result.uploaded.length} 个本地成片${formatSkippedUploadSummary(result.skipped)}，提交导入后有 ${result.importJob.errorList.length} 条校验错误：${formatImportErrors(result.importJob.errorList)}`
+          : `已上传 ${result.uploaded.length} 个本地成片${formatSkippedUploadSummary(result.skipped)}，并提交云管家导入`
       );
     } catch (err) {
       setCloudStatus(toMessage(err));
@@ -2830,6 +2842,10 @@ function buildVideoPreviewUrl(source: string): string {
 
 function buildCloudImportRows(combinations: MixCombination[], publicUrlPrefix: string): CloudImportRow[] {
   return combinations.map((combination) => buildCloudImportRow(combination.targetVideoPath, publicUrlPrefix));
+}
+
+function formatSkippedUploadSummary(skipped?: Array<{ reason: string }>): string {
+  return skipped?.length ? `；已跳过 ${skipped.length} 个未生成成片` : "";
 }
 
 function buildCloudImportRowsFromPaths(filePaths: string[], publicUrlPrefix: string): CloudImportRow[] {
