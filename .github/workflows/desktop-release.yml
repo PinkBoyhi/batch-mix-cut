@@ -85,22 +85,33 @@ jobs:
         run: |
           pnpm install --frozen-lockfile || (sleep 20 && pnpm install --frozen-lockfile)
 
-      - name: Build unsigned macOS installer
-        if: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 == '' || secrets.MACOS_CERTIFICATE_PASSWORD == '' || secrets.APPLE_ID == '' || secrets.APPLE_APP_SPECIFIC_PASSWORD == '' || secrets.APPLE_TEAM_ID == '' }}
+      - name: Build macOS installer
+        shell: bash
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: pnpm build && pnpm exec electron-builder --mac --arm64 --publish never
-
-      - name: Build signed macOS installer
-        if: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: true
-          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm build && pnpm exec electron-builder --mac --arm64 --publish never
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MACOS_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          MACOS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MACOS_CERTIFICATE_P12_BASE64:-}" ] \
+            && [ -n "${MACOS_CERTIFICATE_PASSWORD:-}" ] \
+            && [ -n "${MACOS_APPLE_ID:-}" ] \
+            && [ -n "${MACOS_APPLE_APP_SPECIFIC_PASSWORD:-}" ] \
+            && [ -n "${MACOS_APPLE_TEAM_ID:-}" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=true
+            export CSC_LINK="$MACOS_CERTIFICATE_P12_BASE64"
+            export CSC_KEY_PASSWORD="$MACOS_CERTIFICATE_PASSWORD"
+            export APPLE_ID="$MACOS_APPLE_ID"
+            export APPLE_APP_SPECIFIC_PASSWORD="$MACOS_APPLE_APP_SPECIFIC_PASSWORD"
+            export APPLE_TEAM_ID="$MACOS_APPLE_TEAM_ID"
+          else
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+          fi
+          pnpm build
+          pnpm exec electron-builder --mac --arm64 --publish never
 
       - name: Upload macOS release files
         uses: actions/upload-artifact@v4

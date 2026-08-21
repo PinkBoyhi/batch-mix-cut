@@ -1,5 +1,11 @@
 # 更新日志
 
+## 0.1.30
+
+- 修复 macOS 发布流程的 GitHub Actions 表达式问题，改为在打包脚本内判断 Apple 证书配置。
+- 未配置 Apple Developer ID 时会完全移除空签名变量，避免 electron-builder 误触发签名失败。
+- 重新发布 Windows 安装包和 macOS arm64 DMG/ZIP 包。
+
 ## 0.1.29
 
 - 修复 macOS GitHub Actions 打包：未配置 Apple Developer ID 证书时不再传入空签名变量，避免 electron-builder 误触发签名失败。
