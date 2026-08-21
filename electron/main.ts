@@ -303,10 +303,6 @@ function registerIpc(): void {
   ipcMain.handle("remote:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.resume());
   ipcMain.handle("remote:stop", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.stop());
   ipcMain.handle("remote:get", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.getSnapshot());
-  ipcMain.handle("remote:upload-cloud-videos", async (event, taskId: string, videos: CloudLocalUploadVideo[]) => {
-    return getTaskRuntime(event, taskId).remoteMixClient.uploadCloudVideos(videos, await cloudClient.getPortableUploadSettings());
-  });
-
   ipcMain.handle("job:pause", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.pause());
   ipcMain.handle("job:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.resume());
   ipcMain.handle("job:stop", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.stop());

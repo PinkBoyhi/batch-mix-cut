@@ -924,10 +924,7 @@ function TaskWorkspace({
     setCloudBusy(true);
     setCloudStatus(automatic ? "混剪已完成，正在上传本地成片到云管家..." : "正在上传本地成片到云管家...");
     try {
-      const result =
-        activeMixExecutionTarget === "server"
-          ? await api.uploadRemoteCloudVideos(taskId, videos)
-          : await api.uploadCloudLocalVideos(videos);
+      const result = await api.uploadCloudLocalVideos(videos);
       setCloudImportRequestId(result.importJob.requestId);
       setCloudImportRows((currentRows) =>
         currentRows.map((row) => {

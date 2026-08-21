@@ -8,9 +8,6 @@ import path from "node:path";
 import type {
   AssetInfo,
   BatchJobSnapshot,
-  CloudLocalUploadJob,
-  CloudLocalUploadVideo,
-  CloudSettings,
   MixCombination,
   MixProjectConfig,
   RemoteMixSettings,
@@ -37,11 +34,6 @@ interface RemoteJobResponse {
 interface RemoteOutputsResponse {
   ok: boolean;
   files: Array<{ name: string; size: number; url: string }>;
-}
-
-interface RemoteCloudUploadResponse {
-  ok: boolean;
-  result: CloudLocalUploadJob;
 }
 
 export class RemoteMixClient extends EventEmitter {
@@ -103,7 +95,6 @@ export class RemoteMixClient extends EventEmitter {
     this.stopped = false;
     this.currentSettings = settings;
     const projectId = `desktop-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-    const remoteProjectDir = path.posix.join(health.workspaceRoot, "projects", projectId);
     const remoteConfig = await this.uploadProjectAssets(settings, health.workspaceRoot, projectId, config);
     this.currentConfig = remoteConfig;
 
@@ -111,7 +102,7 @@ export class RemoteMixClient extends EventEmitter {
     this.currentJobId = response.jobId;
     this.snapshot = response.snapshot;
     this.emitSnapshot({ ...this.snapshot, message: `服务器任务已开始：${response.jobId}` });
-    void this.pollUntilDone(settings, config, remoteProjectDir);
+    void this.pollUntilDone(settings, config);
     return this.snapshot;
   }
 
@@ -132,20 +123,6 @@ export class RemoteMixClient extends EventEmitter {
     return structuredClone(this.snapshot);
   }
 
-  async uploadCloudVideos(videos: CloudLocalUploadVideo[], settings: CloudSettings): Promise<CloudLocalUploadJob> {
-    const remoteSettings = await this.readSettings();
-    if (!this.currentJobId) {
-      throw new Error("没有可上传云管家的服务器混剪任务");
-    }
-    const response = await this.requestJson<RemoteCloudUploadResponse>(
-      remoteSettings,
-      "POST",
-      `/api/jobs/${encodeURIComponent(this.currentJobId)}/cloud/upload`,
-      { settings, videos }
-    );
-    return response.result;
-  }
-
   private async forwardJobAction(action: "pause" | "resume" | "stop"): Promise<BatchJobSnapshot> {
     const settings = this.currentSettings ?? (await this.readSettings());
     if (!this.currentJobId) {
@@ -160,7 +137,7 @@ export class RemoteMixClient extends EventEmitter {
     return this.snapshot;
   }
 
-  private async pollUntilDone(settings: StoredRemoteSettings, originalConfig: MixProjectConfig, remoteProjectDir: string): Promise<void> {
+  private async pollUntilDone(settings: StoredRemoteSettings, originalConfig: MixProjectConfig): Promise<void> {
     while (!this.stopped && this.currentJobId) {
       await delay(1200);
       const response = await this.requestJson<{ ok: boolean; snapshot: BatchJobSnapshot }>(
@@ -168,13 +145,29 @@ export class RemoteMixClient extends EventEmitter {
         "GET",
         `/api/jobs/${encodeURIComponent(this.currentJobId)}`
       );
-      this.emitSnapshot(response.snapshot);
       if (!["completed", "failed", "idle"].includes(response.snapshot.status)) {
+        this.emitSnapshot(response.snapshot);
         continue;
       }
-      if (response.snapshot.status === "completed" && (originalConfig.exportTarget === "local" || originalConfig.exportTarget === "both")) {
-        await this.downloadOutputs(settings, originalConfig, remoteProjectDir);
+      if (response.snapshot.status === "completed" && shouldDownloadRemoteOutputs(originalConfig)) {
+        this.emitSnapshot({
+          ...response.snapshot,
+          status: "running",
+          message: "服务器混剪已完成，正在下载成片到本地..."
+        });
+        try {
+          await this.downloadOutputs(settings, originalConfig, response.snapshot);
+        } catch (error) {
+          this.emitSnapshot({
+            ...response.snapshot,
+            status: "failed",
+            message: `服务器成片下载失败：${toErrorMessage(error)}`,
+            finishedAt: new Date().toISOString()
+          });
+        }
+        return;
       }
+      this.emitSnapshot(response.snapshot);
       return;
     }
   }
@@ -231,7 +224,11 @@ export class RemoteMixClient extends EventEmitter {
     };
   }
 
-  private async downloadOutputs(settings: StoredRemoteSettings, originalConfig: MixProjectConfig, remoteProjectDir: string): Promise<void> {
+  private async downloadOutputs(
+    settings: StoredRemoteSettings,
+    originalConfig: MixProjectConfig,
+    completedSnapshot: BatchJobSnapshot
+  ): Promise<void> {
     if (!this.currentJobId) {
       return;
     }
@@ -243,7 +240,7 @@ export class RemoteMixClient extends EventEmitter {
       await downloadFile(settings, `/api/jobs/${encodeURIComponent(this.currentJobId)}/outputs/${encodeURIComponent(file.name)}`, path.join(localVideosDir, file.name));
     }
     this.emitSnapshot({
-      ...this.snapshot,
+      ...completedSnapshot,
       status: "completed",
       message: `服务器混剪已完成${response.files.length > 0 ? "，成片已下载到本地输出目录" : ""}`
     });
@@ -310,6 +307,14 @@ function remoteFileName(filePath: string): string {
 
 function normalizeServerUrl(value: string): string {
   return value.trim().replace(/\/+$/, "") || DEFAULT_SERVER_URL;
+}
+
+function shouldDownloadRemoteOutputs(config: MixProjectConfig): boolean {
+  return config.exportMode !== "draft";
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function emptySnapshot(): BatchJobSnapshot {

@@ -43,7 +43,6 @@ const api = {
   getCloudRawUrl: (videoId, isInner) => ipcRenderer.invoke("cloud:get-raw-url", videoId, isInner),
   importCloudVideos: (videos) => ipcRenderer.invoke("cloud:import-videos", videos),
   uploadCloudLocalVideos: (videos) => ipcRenderer.invoke("cloud:upload-local-videos", videos),
-  uploadRemoteCloudVideos: (taskId, videos) => ipcRenderer.invoke("remote:upload-cloud-videos", taskId, videos),
   queryCloudImportResult: (requestId, pageNo, pageSize) =>
     ipcRenderer.invoke("cloud:query-import-result", requestId, pageNo, pageSize),
   onJobUpdate: (callback) => {

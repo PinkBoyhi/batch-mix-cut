@@ -357,7 +357,6 @@ export interface AppApi {
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => Promise<string>;
   importCloudVideos: (videos: CloudImportVideo[]) => Promise<CloudImportJob>;
   uploadCloudLocalVideos: (videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
-  uploadRemoteCloudVideos: (taskId: string, videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
   queryCloudImportResult: (
     requestId: string,
     pageNo?: number,
