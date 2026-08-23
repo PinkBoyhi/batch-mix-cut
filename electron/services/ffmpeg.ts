@@ -14,8 +14,18 @@ export interface ExportHandle {
   cancel: () => void;
 }
 
-const loudnessCache = new Map<string, Promise<number | undefined>>();
+interface VolumeStats {
+  meanDb?: number;
+  maxDb?: number;
+}
+
+const loudnessCache = new Map<string, Promise<VolumeStats>>();
 const mediaMetadataCache = new Map<string, Promise<Partial<AssetInfo>>>();
+const TARGET_AUDIBLE_MEAN_DB = -23;
+const TARGET_PEAK_DB = -1.5;
+const MIN_GAIN_DB = -18;
+const MAX_GAIN_DB = 60;
+const SILENCE_PEAK_DB = -85;
 
 export function exportVideo(config: MixProjectConfig, combination: MixCombination): ExportHandle {
   let child: ChildProcessWithoutNullStreams | undefined;
@@ -93,11 +103,17 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       activeBgmLabels.push(`[${label}]`);
     });
 
+    const finalAudioFilterChain = buildFinalAudioFilterChain();
     if (activeBgmLabels.length > 0) {
-      filters.push(`[asrc]${activeBgmLabels.join("")}amix=inputs=${activeBgmLabels.length + 1}:duration=first:dropout_transition=0[aout]`);
+      filters.push(
+        `[asrc]${activeBgmLabels.join("")}amix=inputs=${activeBgmLabels.length + 1}:duration=first:dropout_transition=0[amixed]`
+      );
+      filters.push(`[amixed]${finalAudioFilterChain}[aout]`);
+    } else {
+      filters.push(`[asrc]${finalAudioFilterChain}[aout]`);
     }
 
-    args.push("-filter_complex", filters.join(";"), "-map", "[vout]", "-map", activeBgmLabels.length > 0 ? "[aout]" : "[asrc]");
+    args.push("-filter_complex", filters.join(";"), "-map", "[vout]", "-map", "[aout]");
 
     if (activeBgmLabels.length > 0) {
       args.push("-shortest");
@@ -141,6 +157,10 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
         reject(new Error(stderr.trim() || `FFmpeg 退出码 ${code}`));
       });
     });
+
+    if (!cancelled) {
+      await repairQuietAudioIfNeeded(combination.targetVideoPath);
+    }
   })();
 
   return {
@@ -255,38 +275,40 @@ async function downloadRemoteAsset(urlString: string, targetPath: string, redire
 }
 
 async function resolveSourceLoudness(videoAssets: AssetInfo[]): Promise<Array<{ meanDb?: number; gainDb: number }>> {
-  const measured: Array<{ meanDb?: number; gainDb: number }> = [];
+  const measured: Array<VolumeStats & { gainDb: number }> = [];
   let referenceDb: number | undefined;
 
   for (const asset of videoAssets) {
-    const meanDb = asset.hasAudio ? await measureMeanVolume(asset.path) : undefined;
-    if (referenceDb === undefined && meanDb !== undefined) {
-      referenceDb = meanDb;
+    const stats = asset.hasAudio ? await measureVolume(asset.path) : {};
+    if (referenceDb === undefined && stats.meanDb !== undefined && !isProbablySilent(stats)) {
+      referenceDb = stats.meanDb;
     }
-    measured.push({ meanDb, gainDb: 0 });
+    measured.push({ ...stats, gainDb: 0 });
   }
 
+  const targetDb = resolveReferenceTargetDb(referenceDb);
   return measured.map((item) => ({
     meanDb: item.meanDb,
-    gainDb: referenceDb !== undefined && item.meanDb !== undefined ? clampGain(referenceDb - item.meanDb) : 0
+    gainDb: computeLoudnessGain(item, targetDb)
   }));
 }
 
 async function resolveBgmLoudness(tracks: MixCombinationBgmTrack[]): Promise<Array<{ meanDb?: number; gainDb: number }>> {
-  const measured: Array<{ meanDb?: number; gainDb: number }> = [];
+  const measured: Array<VolumeStats & { gainDb: number }> = [];
   let referenceDb: number | undefined;
 
   for (const track of tracks) {
-    const meanDb = track.asset.hasAudio === false ? undefined : await measureMeanVolume(track.asset.path);
-    if (referenceDb === undefined && meanDb !== undefined) {
-      referenceDb = meanDb;
+    const stats = track.asset.hasAudio === false ? {} : await measureVolume(track.asset.path);
+    if (referenceDb === undefined && stats.meanDb !== undefined && !isProbablySilent(stats)) {
+      referenceDb = stats.meanDb;
     }
-    measured.push({ meanDb, gainDb: 0 });
+    measured.push({ ...stats, gainDb: 0 });
   }
 
+  const targetDb = resolveReferenceTargetDb(referenceDb);
   return measured.map((item) => ({
     meanDb: item.meanDb,
-    gainDb: referenceDb !== undefined && item.meanDb !== undefined ? clampGain(referenceDb - item.meanDb) : 0
+    gainDb: computeLoudnessGain(item, targetDb)
   }));
 }
 
@@ -307,13 +329,13 @@ function resolveCombinationBgmTracks(config: MixProjectConfig, combination: MixC
   ];
 }
 
-function measureMeanVolume(filePath: string): Promise<number | undefined> {
+function measureVolume(filePath: string): Promise<VolumeStats> {
   const cached = loudnessCache.get(filePath);
   if (cached) {
     return cached;
   }
 
-  const promise = new Promise<number | undefined>((resolve) => {
+  const promise = new Promise<VolumeStats>((resolve) => {
     const child = spawn(getFfmpegPath(), [
       "-hide_banner",
       "-nostats",
@@ -337,10 +359,14 @@ function measureMeanVolume(filePath: string): Promise<number | undefined> {
       }
     });
 
-    child.on("error", () => resolve(undefined));
+    child.on("error", () => resolve({}));
     child.on("close", () => {
-      const match = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
-      resolve(match ? Number(match[1]) : undefined);
+      const meanMatch = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+      const maxMatch = stderr.match(/max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+      resolve({
+        meanDb: meanMatch ? Number(meanMatch[1]) : undefined,
+        maxDb: maxMatch ? Number(maxMatch[1]) : undefined
+      });
     });
   });
 
@@ -348,11 +374,110 @@ function measureMeanVolume(filePath: string): Promise<number | undefined> {
   return promise;
 }
 
+async function repairQuietAudioIfNeeded(filePath: string): Promise<void> {
+  loudnessCache.delete(filePath);
+  const stats = await measureVolume(filePath);
+  if (!shouldRepairQuietAudio(stats)) {
+    return;
+  }
+
+  const gainDb = computeLoudnessGain(stats, TARGET_AUDIBLE_MEAN_DB);
+  if (gainDb <= 0.5) {
+    return;
+  }
+
+  const tempPath = `${filePath}.audiofix-${process.pid}-${Date.now()}.mp4`;
+  try {
+    await runAudioRepair(filePath, tempPath, gainDb);
+    await fs.rename(tempPath, filePath);
+    loudnessCache.delete(filePath);
+  } catch (error) {
+    await fs.unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+function shouldRepairQuietAudio(stats: VolumeStats): boolean {
+  if (stats.meanDb === undefined || isProbablySilent(stats)) {
+    return false;
+  }
+  return stats.meanDb < -45 || (stats.maxDb !== undefined && stats.maxDb < -25);
+}
+
+function runAudioRepair(inputPath: string, outputPath: string, gainDb: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(getFfmpegPath(), [
+      "-y",
+      "-i",
+      inputPath,
+      "-map",
+      "0:v:0",
+      "-map",
+      "0:a:0",
+      "-c:v",
+      "copy",
+      "-af",
+      `volume=${gainDb.toFixed(2)}dB,${buildFinalAudioFilterChain()}`,
+      "-c:a",
+      "aac",
+      "-movflags",
+      "+faststart",
+      outputPath
+    ]);
+    let stderr = "";
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 12000) {
+        stderr = stderr.slice(-12000);
+      }
+    });
+
+    child.on("error", (error) => reject(describeMissingBinary("ffmpeg", error)));
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(stderr.trim() || `FFmpeg 音频修复退出码 ${code}`));
+    });
+  });
+}
+
+function resolveReferenceTargetDb(referenceDb: number | undefined): number {
+  if (typeof referenceDb !== "number" || !Number.isFinite(referenceDb)) {
+    return TARGET_AUDIBLE_MEAN_DB;
+  }
+  return Math.max(referenceDb, TARGET_AUDIBLE_MEAN_DB);
+}
+
+function computeLoudnessGain(stats: VolumeStats, targetDb: number): number {
+  if (stats.meanDb === undefined || isProbablySilent(stats)) {
+    return 0;
+  }
+  const gainToTarget = targetDb - stats.meanDb;
+  const gainToPeak = stats.maxDb === undefined ? MAX_GAIN_DB : TARGET_PEAK_DB - stats.maxDb;
+  return clampGain(Math.min(gainToTarget, gainToPeak));
+}
+
+function isProbablySilent(stats: VolumeStats): boolean {
+  return stats.maxDb !== undefined && stats.maxDb <= SILENCE_PEAK_DB;
+}
+
 function clampGain(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;
   }
-  return Math.max(-18, Math.min(18, value));
+  return Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, value));
+}
+
+function buildFinalAudioFilterChain(): string {
+  const filters = [
+    "aresample=async=1:first_pts=0",
+    "alimiter=limit=0.95",
+    "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+  ].filter(Boolean);
+  return filters.join(",");
 }
 
 function formatStereoDelay(delayMs: number): string {
