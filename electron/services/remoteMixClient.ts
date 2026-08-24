@@ -166,6 +166,16 @@ export class RemoteMixClient extends EventEmitter {
         continue;
       }
       if (response.snapshot.status === "completed" && shouldDownloadRemoteOutputs(originalConfig)) {
+        const completionError = getRemoteCompletionError(response.snapshot);
+        if (completionError) {
+          this.emitSnapshot({
+            ...response.snapshot,
+            status: "failed",
+            message: completionError,
+            finishedAt: new Date().toISOString()
+          });
+          return;
+        }
         this.emitSnapshot({
           ...response.snapshot,
           status: "running",
@@ -250,6 +260,9 @@ export class RemoteMixClient extends EventEmitter {
       return;
     }
     const response = await this.requestJson<RemoteOutputsResponse>(settings, "GET", `/api/jobs/${encodeURIComponent(this.currentJobId)}/outputs`);
+    if (response.files.length === 0) {
+      throw new Error("服务器任务已完成，但没有返回可下载的 MP4 成片");
+    }
     const localVideosDir = path.join(originalConfig.outputDir, "videos");
     await fs.mkdir(localVideosDir, { recursive: true });
     for (const file of response.files) {
@@ -259,7 +272,9 @@ export class RemoteMixClient extends EventEmitter {
     this.emitSnapshot({
       ...completedSnapshot,
       status: "completed",
-      message: `服务器混剪已完成${response.files.length > 0 ? "，成片已下载到本地输出目录" : ""}`
+      message: `服务器混剪已完成，${response.files.length} 条成片已下载到本地输出目录${
+        completedSnapshot.failed > 0 ? `，另有 ${completedSnapshot.failed} 条失败` : ""
+      }`
     });
   }
 
@@ -341,6 +356,14 @@ export function toRemoteAsset(asset: AssetInfo, remotePath: string, useLegacyAud
 
 function shouldDownloadRemoteOutputs(config: MixProjectConfig): boolean {
   return config.exportMode !== "draft";
+}
+
+export function getRemoteCompletionError(snapshot: BatchJobSnapshot): string | undefined {
+  if (snapshot.completed > 0) {
+    return undefined;
+  }
+  const reason = snapshot.failures[0]?.message;
+  return reason ? `服务器未生成成片：${reason}` : "服务器未生成成片，请检查服务器日志后重试";
 }
 
 function toErrorMessage(error: unknown): string {
