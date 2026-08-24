@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AssetInfo, MixCombination, MixProjectConfig } from "../../src/shared/types.js";
-import { exportVideo } from "./ffmpeg.js";
+import { exportVideo, mergeAssetMetadata } from "./ffmpeg.js";
 import { getFfmpegPath } from "./ffmpegBinaries.js";
 
 let tempDirs: string[] = [];
@@ -15,6 +15,20 @@ afterEach(async () => {
 });
 
 describe("exportVideo audio output", () => {
+  it("keeps a desktop-confirmed audio stream when a server-side re-probe has no audio result", () => {
+    const asset: AssetInfo = {
+      id: "known-audio",
+      kind: "video",
+      name: "known-audio.mp4",
+      path: "/remote/source.mp4",
+      hasAudio: true
+    };
+
+    expect(mergeAssetMetadata(asset, { hasAudio: false, durationSeconds: 2 })).toEqual(
+      expect.objectContaining({ hasAudio: true, durationSeconds: 2 })
+    );
+  });
+
   it(
     "repairs very quiet exported audio even when loudness normalization is disabled",
     async () => {

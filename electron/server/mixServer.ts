@@ -26,6 +26,7 @@ const allowAnyPath = process.env.MIX_SERVER_ALLOW_ANY_PATH === "1";
 const maxUploadBytes = Number(process.env.MIX_SERVER_MAX_UPLOAD_MB ?? "20480") * 1024 * 1024;
 const maxConcurrentJobs = Math.max(1, Number(process.env.MIX_SERVER_MAX_CONCURRENT_JOBS ?? "2") || 2);
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
+const audioPipelineVersion = 2;
 const jobs = new Map<string, ServerJob>();
 let dispatchingJobs = false;
 
@@ -70,6 +71,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       service: "yibo-batch-mix-server",
       workspaceRoot,
       authRequired: true,
+      audioPipelineVersion,
       jobs: jobs.size,
       activeJobs: countActiveJobs(),
       queuedJobs: countQueuedJobs(),

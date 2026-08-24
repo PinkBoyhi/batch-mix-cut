@@ -159,7 +159,8 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     });
 
     if (!cancelled) {
-      await repairQuietAudioIfNeeded(combination.targetVideoPath);
+      const outputVolume = await repairQuietAudioIfNeeded(combination.targetVideoPath);
+      assertExpectedAudioIsAudible(outputVolume, config, videoAssets, bgmTracks);
     }
   })();
 
@@ -194,7 +195,17 @@ function shouldProbeAsset(asset: AssetInfo): boolean {
 
 async function withProbedMetadata(asset: AssetInfo): Promise<AssetInfo> {
   const metadata = await getMediaMetadata(asset);
-  return { ...asset, ...metadata };
+  return mergeAssetMetadata(asset, metadata);
+}
+
+// The desktop has already probed local assets before uploading them to a server.
+// A missing server-side ffprobe must not turn that known audio stream into silence.
+export function mergeAssetMetadata(asset: AssetInfo, metadata: Partial<AssetInfo>): AssetInfo {
+  return {
+    ...asset,
+    ...metadata,
+    hasAudio: asset.hasAudio === true || metadata.hasAudio === true
+  };
 }
 
 function getMediaMetadata(asset: AssetInfo): Promise<Partial<AssetInfo>> {
@@ -374,16 +385,16 @@ function measureVolume(filePath: string): Promise<VolumeStats> {
   return promise;
 }
 
-async function repairQuietAudioIfNeeded(filePath: string): Promise<void> {
+async function repairQuietAudioIfNeeded(filePath: string): Promise<VolumeStats> {
   loudnessCache.delete(filePath);
   const stats = await measureVolume(filePath);
   if (!shouldRepairQuietAudio(stats)) {
-    return;
+    return stats;
   }
 
   const gainDb = computeLoudnessGain(stats, TARGET_AUDIBLE_MEAN_DB);
   if (gainDb <= 0.5) {
-    return;
+    return stats;
   }
 
   const tempPath = `${filePath}.audiofix-${process.pid}-${Date.now()}.mp4`;
@@ -391,9 +402,26 @@ async function repairQuietAudioIfNeeded(filePath: string): Promise<void> {
     await runAudioRepair(filePath, tempPath, gainDb);
     await fs.rename(tempPath, filePath);
     loudnessCache.delete(filePath);
+    return measureVolume(filePath);
   } catch (error) {
     await fs.unlink(tempPath).catch(() => undefined);
     throw error;
+  }
+}
+
+function assertExpectedAudioIsAudible(
+  stats: VolumeStats,
+  config: MixProjectConfig,
+  videoAssets: AssetInfo[],
+  bgmTracks: MixCombinationBgmTrack[]
+): void {
+  const expectsSourceAudio = config.sourceVolume > 0 && videoAssets.some((asset) => asset.hasAudio === true);
+  const expectsBgmAudio = config.bgmVolume > 0 && bgmTracks.length > 0;
+  if (!expectsSourceAudio && !expectsBgmAudio) {
+    return;
+  }
+  if (isProbablySilent(stats)) {
+    throw new Error("成片音轨检测为静音。请检查服务器是否已更新到支持音频探测的最新版，再重试该组合。");
   }
 }
 

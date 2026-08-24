@@ -17,12 +17,14 @@ import { createCombinations } from "./combinator.js";
 
 const CONFIG_FILE = "remote-mix-server.json";
 const DEFAULT_SERVER_URL = "http://10.0.0.133:8787";
+const MIN_SERVER_AUDIO_PIPELINE_VERSION = 2;
 
 interface StoredRemoteSettings extends RemoteMixSettings {}
 
 interface RemoteHealth {
   ok: boolean;
   workspaceRoot: string;
+  audioPipelineVersion?: number;
 }
 
 interface RemoteJobResponse {
@@ -71,6 +73,14 @@ export class RemoteMixClient extends EventEmitter {
     if (activeSettings.token) {
       await this.requestJson<{ ok: boolean }>(activeSettings, "GET", "/api/auth/check");
     }
+    if (!supportsAudioPipeline(health)) {
+      return {
+        serverUrl: activeSettings.serverUrl,
+        hasToken: Boolean(activeSettings.token),
+        ok: false,
+        message: "服务器混剪引擎过旧，存在成片静音风险。请更新服务器后再使用服务器混剪。"
+      };
+    }
     return {
       serverUrl: activeSettings.serverUrl,
       hasToken: Boolean(activeSettings.token),
@@ -90,6 +100,9 @@ export class RemoteMixClient extends EventEmitter {
     const health = await this.requestJson<RemoteHealth>(settings, "GET", "/health");
     if (!health.workspaceRoot) {
       throw new Error("服务器没有返回工作目录");
+    }
+    if (!supportsAudioPipeline(health)) {
+      throw new Error("服务器混剪引擎过旧，已阻止任务开始，避免生成静音成片。请先更新服务器。");
     }
 
     this.stopped = false;
@@ -307,6 +320,10 @@ function remoteFileName(filePath: string): string {
 
 function normalizeServerUrl(value: string): string {
   return value.trim().replace(/\/+$/, "") || DEFAULT_SERVER_URL;
+}
+
+function supportsAudioPipeline(health: RemoteHealth): boolean {
+  return (health.audioPipelineVersion ?? 0) >= MIN_SERVER_AUDIO_PIPELINE_VERSION;
 }
 
 function shouldDownloadRemoteOutputs(config: MixProjectConfig): boolean {
