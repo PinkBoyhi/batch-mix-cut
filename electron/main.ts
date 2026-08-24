@@ -18,6 +18,7 @@ import { JobManager } from "./services/jobManager.js";
 import { createCombinations } from "./services/combinator.js";
 import { probeAsset } from "./services/mediaProbe.js";
 import { YunguanjiaClient } from "./services/yunguanjiaClient.js";
+import { CloudPublishProfileStore } from "./services/cloudPublishProfiles.js";
 import { RemoteMixClient } from "./services/remoteMixClient.js";
 import { UpdateManager } from "./services/updateManager.js";
 import { assetId, isVideoFile, naturalCompare } from "./utils/path.js";
@@ -26,6 +27,7 @@ import type {
   AssetInfo,
   CloudImportVideo,
   CloudLocalUploadVideo,
+  CloudPublishProfileInput,
   CloudSettings,
   CloudVideoListQuery,
   MixProjectConfig,
@@ -35,6 +37,7 @@ import type {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const cloudClient = new YunguanjiaClient(() => app.getPath("userData"));
+const cloudPublishProfileStore = new CloudPublishProfileStore(() => app.getPath("userData"));
 const updateManager = new UpdateManager(app.getVersion());
 const DEFAULT_CLOUD_LOGIN_URL = "https://sucaiwang.zhishangsoft.com/#/classification";
 const DEFAULT_CLOUD_UPLOAD_BASE_URL = "https://sucaiwang-api-elb.zhishangsoft.com";
@@ -326,6 +329,9 @@ function registerIpc(): void {
 
   ipcMain.handle("cloud:get-settings", async () => cloudClient.getSettingsView());
   ipcMain.handle("cloud:save-settings", async (_event, settings: CloudSettings) => cloudClient.saveSettings(settings));
+  ipcMain.handle("cloud:publish-profiles", async () => cloudPublishProfileStore.list());
+  ipcMain.handle("cloud:save-publish-profile", async (_event, profile: CloudPublishProfileInput) => cloudPublishProfileStore.save(profile));
+  ipcMain.handle("cloud:delete-publish-profile", async (_event, profileId: string) => cloudPublishProfileStore.delete(profileId));
   ipcMain.handle("cloud:test-connection", async () => cloudClient.testConnection());
   ipcMain.handle("cloud:capture-upload-token", async (event, loginUrl?: string) => captureCloudUploadToken(loginUrl, getEventWindow(event)));
   ipcMain.handle("cloud:verify-phone", async (_event, phone: string) => cloudClient.verifyPhone(phone));

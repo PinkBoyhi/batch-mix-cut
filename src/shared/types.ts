@@ -302,6 +302,31 @@ export interface CloudImportResult {
   msg?: string;
 }
 
+export type CloudPublishMode = "single" | "collection";
+
+export type CloudNameMode = "file" | "custom" | "prefix";
+
+export interface CloudPublishProfileInput {
+  id?: string;
+  name: string;
+  videoType: number;
+  oneLevelTypeId: string;
+  twoLevelTypeId: string;
+  labelIds: string;
+  videoRight: number;
+  syncEnabled: boolean;
+  rotation: CloudVideoRotation;
+  publishMode: CloudPublishMode;
+  nameMode: CloudNameMode;
+  customName: string;
+  namePrefix: string;
+}
+
+export interface CloudPublishProfile extends CloudPublishProfileInput {
+  id: string;
+  updatedAt: string;
+}
+
 export interface RemoteMixSettings {
   serverUrl: string;
   token?: string;
@@ -344,6 +369,9 @@ export interface AppApi {
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) => () => void;
   getCloudSettings: () => Promise<CloudSettingsView>;
   saveCloudSettings: (settings: CloudSettings) => Promise<CloudSettingsView>;
+  getCloudPublishProfiles: () => Promise<CloudPublishProfile[]>;
+  saveCloudPublishProfile: (profile: CloudPublishProfileInput) => Promise<CloudPublishProfile>;
+  deleteCloudPublishProfile: (profileId: string) => Promise<void>;
   testCloudConnection: () => Promise<{ ok: true }>;
   captureCloudUploadToken: (loginUrl?: string) => Promise<CloudSettingsView>;
   verifyCloudPhone: (phone: string) => Promise<CloudSettingsView>;

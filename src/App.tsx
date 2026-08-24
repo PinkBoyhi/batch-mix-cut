@@ -13,6 +13,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Save,
   Search,
   Square,
   Trash2,
@@ -28,7 +29,10 @@ import type {
   CloudImportJob,
   CloudImportResult,
   CloudImportVideo,
+  CloudNameMode,
   CloudLocalUploadVideo,
+  CloudPublishMode,
+  CloudPublishProfile,
   CloudSettingsView,
   CloudVideo,
   CloudVideoLabel,
@@ -260,8 +264,8 @@ function TaskWorkspace({
   const [autoCloudImportJobId, setAutoCloudImportJobId] = useState<string | undefined>();
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState(true);
   const [cloudRotation, setCloudRotation] = useState<CloudVideoRotation>("none");
-  const [cloudPublishMode, setCloudPublishMode] = useState<"single" | "collection">("single");
-  const [cloudNameMode, setCloudNameMode] = useState<"file" | "custom" | "prefix">("file");
+  const [cloudPublishMode, setCloudPublishMode] = useState<CloudPublishMode>("single");
+  const [cloudNameMode, setCloudNameMode] = useState<CloudNameMode>("file");
   const [cloudCustomName, setCloudCustomName] = useState("");
   const [cloudNamePrefix, setCloudNamePrefix] = useState("");
   const [cloudImportMeta, setCloudImportMeta] = useState({
@@ -273,6 +277,9 @@ function TaskWorkspace({
   });
   const [cloudImportRequestId, setCloudImportRequestId] = useState("");
   const [cloudImportResults, setCloudImportResults] = useState<CloudImportResult[]>([]);
+  const [cloudPublishProfiles, setCloudPublishProfiles] = useState<CloudPublishProfile[]>([]);
+  const [selectedCloudPublishProfileId, setSelectedCloudPublishProfileId] = useState("");
+  const [cloudPublishProfileName, setCloudPublishProfileName] = useState("");
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot>(emptyUpdate);
   const [releaseNotes, setReleaseNotes] = useState<UpdateReleaseNotes | undefined>();
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
@@ -311,10 +318,10 @@ function TaskWorkspace({
         if (settings.hasToken) {
           const tested = await api.testRemoteMixServer(taskId);
           setRemoteMixSettings(tested);
-          setRemoteStatus(tested.message);
+          setRemoteStatus(tested.ok ? "服务器连接成功" : "服务器连接失败");
         }
       })
-      .catch((err) => setRemoteStatus(toMessage(err)));
+      .catch(() => setRemoteStatus("服务器连接失败"));
   }, [api, taskId]);
 
   useEffect(() => {
@@ -329,6 +336,11 @@ function TaskWorkspace({
       .getCloudSettings()
       .then(setCloudSettings)
       .catch((err) => setCloudStatus(toMessage(err)));
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return;
+    void api.getCloudPublishProfiles().then(setCloudPublishProfiles).catch(() => setCloudPublishProfiles([]));
   }, [api]);
 
   useEffect(() => {
@@ -422,6 +434,53 @@ function TaskWorkspace({
   const selectedOneLevelType = oneLevelTypes.find((item) => String(item.id) === cloudImportMeta.oneLevelTypeId);
   const twoLevelTypes = selectedOneLevelType?.children ?? cloudVideoTypes.filter((item) => item.level === 2);
   const flattenedLabels = useMemo(() => flattenSelectableCloudLabels(cloudVideoLabels), [cloudVideoLabels]);
+  const cloudPublishProfileControls = (
+    <div className="publish-profile-controls">
+      <label>
+        <span>已保存配置</span>
+        <select
+          value={selectedCloudPublishProfileId}
+          onChange={(event) => void selectCloudPublishProfile(event.target.value)}
+          disabled={!api || cloudBusy}
+        >
+          <option value="">选择配置</option>
+          {cloudPublishProfiles.map((profile) => (
+            <option value={profile.id} key={profile.id}>
+              {profile.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>配置名称</span>
+        <input
+          value={cloudPublishProfileName}
+          placeholder="例如：清水成片"
+          onChange={(event) => setCloudPublishProfileName(event.target.value)}
+          disabled={!api || cloudBusy}
+        />
+      </label>
+      <div className="publish-profile-actions">
+        <button className="secondary-inline" type="button" onClick={createNewCloudPublishProfile} disabled={!api || cloudBusy}>
+          <Plus size={15} />
+          新建
+        </button>
+        <button className="inline-command" type="button" onClick={() => void saveCloudPublishProfile()} disabled={!api || cloudBusy}>
+          <Save size={15} />
+          保存配置
+        </button>
+        <button
+          className="icon-command"
+          type="button"
+          title="删除当前配置"
+          onClick={() => void deleteCloudPublishProfile()}
+          disabled={!api || cloudBusy || !selectedCloudPublishProfileId}
+        >
+          <Trash2 size={16} />
+        </button>
+      </div>
+    </div>
+  );
 
   async function createProject() {
     if (!api) {
@@ -592,29 +651,118 @@ function TaskWorkspace({
 
   async function saveRemoteMixServer() {
     if (!api) return;
-    setRemoteStatus("正在连接服务器...");
+    setRemoteStatus(undefined);
     try {
       const settings = await api.saveRemoteMixSettings(taskId, { serverUrl: remoteServerUrl, token: remoteToken });
       setRemoteMixSettings(settings);
-      setRemoteStatus(settings.message ?? "服务器配置已保存");
+      setRemoteStatus(settings.ok ? "服务器连接成功" : "服务器连接失败");
       if (settings.serverUrl) {
         setRemoteServerUrl(settings.serverUrl);
       }
       setRemoteToken("");
-    } catch (err) {
-      setRemoteStatus(toMessage(err));
+    } catch {
+      setRemoteStatus("服务器连接失败");
     }
   }
 
   async function testRemoteMixServer() {
     if (!api) return;
-    setRemoteStatus("正在测试服务器...");
+    setRemoteStatus(undefined);
     try {
       const settings = await api.testRemoteMixServer(taskId);
       setRemoteMixSettings(settings);
-      setRemoteStatus(settings.message ?? "服务器连接正常");
+      setRemoteStatus(settings.ok ? "服务器连接成功" : "服务器连接失败");
+    } catch {
+      setRemoteStatus("服务器连接失败");
+    }
+  }
+
+  function createNewCloudPublishProfile() {
+    setSelectedCloudPublishProfileId("");
+    setCloudPublishProfileName("");
+  }
+
+  async function selectCloudPublishProfile(profileId: string) {
+    setSelectedCloudPublishProfileId(profileId);
+    if (!profileId) {
+      return;
+    }
+    const profile = cloudPublishProfiles.find((item) => item.id === profileId);
+    if (!profile) {
+      return;
+    }
+    setCloudPublishProfileName(profile.name);
+    setCloudImportMeta({
+      videoType: profile.videoType,
+      oneLevelTypeId: profile.oneLevelTypeId,
+      twoLevelTypeId: profile.twoLevelTypeId,
+      labelIds: profile.labelIds,
+      videoRight: profile.videoRight
+    });
+    setCloudSyncEnabled(profile.syncEnabled);
+    setCloudRotation(profile.rotation);
+    setCloudPublishMode(profile.publishMode);
+    setCloudNameMode(profile.nameMode);
+    setCloudCustomName(profile.customName);
+    setCloudNamePrefix(profile.namePrefix);
+    await loadCloudTaxonomy(profile.videoType);
+    if (profile.twoLevelTypeId) {
+      await loadCloudLabelsForSelection(profile.videoType, profile.oneLevelTypeId, profile.twoLevelTypeId);
+    }
+    setCloudStatus(`已应用配置：${profile.name}`);
+  }
+
+  async function saveCloudPublishProfile() {
+    if (!api) return;
+    const name = cloudPublishProfileName.trim();
+    if (!name) {
+      setCloudStatus("请先填写配置名称");
+      return;
+    }
+    setCloudBusy(true);
+    try {
+      const saved = await api.saveCloudPublishProfile({
+        id: selectedCloudPublishProfileId || undefined,
+        name,
+        videoType: cloudImportMeta.videoType,
+        oneLevelTypeId: cloudImportMeta.oneLevelTypeId,
+        twoLevelTypeId: cloudImportMeta.twoLevelTypeId,
+        labelIds: cloudImportMeta.labelIds,
+        videoRight: cloudImportMeta.videoRight,
+        syncEnabled: cloudSyncEnabled,
+        rotation: cloudRotation,
+        publishMode: cloudPublishMode,
+        nameMode: cloudNameMode,
+        customName: cloudCustomName,
+        namePrefix: cloudNamePrefix
+      });
+      setCloudPublishProfiles(await api.getCloudPublishProfiles());
+      setSelectedCloudPublishProfileId(saved.id);
+      setCloudPublishProfileName(saved.name);
+      setCloudStatus(`已保存配置：${saved.name}`);
     } catch (err) {
-      setRemoteStatus(toMessage(err));
+      setCloudStatus(toMessage(err));
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  async function deleteCloudPublishProfile() {
+    if (!api || !selectedCloudPublishProfileId) return;
+    const profile = cloudPublishProfiles.find((item) => item.id === selectedCloudPublishProfileId);
+    if (!profile || !window.confirm(`确定删除配置“${profile.name}”吗？`)) {
+      return;
+    }
+    setCloudBusy(true);
+    try {
+      await api.deleteCloudPublishProfile(profile.id);
+      setCloudPublishProfiles(await api.getCloudPublishProfiles());
+      createNewCloudPublishProfile();
+      setCloudStatus(`已删除配置：${profile.name}`);
+    } catch (err) {
+      setCloudStatus(toMessage(err));
+    } finally {
+      setCloudBusy(false);
     }
   }
 
@@ -1156,8 +1304,7 @@ function TaskWorkspace({
             {mixExecutionTarget === "server" && (
               <div className="remote-mix-card">
                 <div className="remote-mix-header">
-                  <strong>{remoteMixSettings.ok ? "服务器已连接" : "服务器未连接"}</strong>
-                  <span>{remoteMixSettings.serverUrl || remoteServerUrl}</span>
+                  <strong>{remoteMixSettings.ok ? "服务器连接成功" : "服务器连接失败"}</strong>
                 </div>
                 <label className="field">
                   <span>服务器地址</span>
@@ -1736,6 +1883,7 @@ function TaskWorkspace({
                       <h2>视频信息</h2>
                       <span>填写视频分区、分类、发布方式、命名</span>
                     </div>
+                    {cloudPublishProfileControls}
                     <div className="cloud-info-form">
                       <div className="form-line">
                         <span className="required">视频分区</span>
@@ -2096,6 +2244,7 @@ function TaskWorkspace({
                     <h2>视频信息</h2>
                     <span>填写视频分区、分类、发布方式、命名。</span>
                   </div>
+                  {cloudPublishProfileControls}
                   <div className="cloud-info-form">
                     <div className="form-line">
                       <span className="required">视频分区</span>
