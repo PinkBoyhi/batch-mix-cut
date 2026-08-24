@@ -77,8 +77,8 @@ export class RemoteMixClient extends EventEmitter {
       return {
         serverUrl: activeSettings.serverUrl,
         hasToken: Boolean(activeSettings.token),
-        ok: false,
-        message: "服务器混剪引擎过旧，存在成片静音风险。请更新服务器后再使用服务器混剪。"
+        ok: Boolean(health.ok && activeSettings.token),
+        message: "服务器混剪引擎较旧，已启用音频兼容模式；建议尽快更新服务器。"
       };
     }
     return {
@@ -101,14 +101,17 @@ export class RemoteMixClient extends EventEmitter {
     if (!health.workspaceRoot) {
       throw new Error("服务器没有返回工作目录");
     }
-    if (!supportsAudioPipeline(health)) {
-      throw new Error("服务器混剪引擎过旧，已阻止任务开始，避免生成静音成片。请先更新服务器。");
-    }
 
     this.stopped = false;
     this.currentSettings = settings;
     const projectId = `desktop-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-    const remoteConfig = await this.uploadProjectAssets(settings, health.workspaceRoot, projectId, config);
+    const remoteConfig = await this.uploadProjectAssets(
+      settings,
+      health.workspaceRoot,
+      projectId,
+      config,
+      !supportsAudioPipeline(health)
+    );
     this.currentConfig = remoteConfig;
 
     const response = await this.requestJson<RemoteJobResponse>(settings, "POST", "/api/jobs", { config: remoteConfig });
@@ -189,7 +192,8 @@ export class RemoteMixClient extends EventEmitter {
     settings: StoredRemoteSettings,
     workspaceRoot: string,
     projectId: string,
-    config: MixProjectConfig
+    config: MixProjectConfig,
+    useLegacyAudioCompatibility: boolean
   ): Promise<MixProjectConfig> {
     const assetMap = new Map<string, string>();
     const uploadAsset = async (asset: AssetInfo, folder: string): Promise<AssetInfo> => {
@@ -198,14 +202,14 @@ export class RemoteMixClient extends EventEmitter {
       }
       const cached = assetMap.get(asset.path);
       if (cached) {
-        return { ...asset, path: cached };
+        return toRemoteAsset(asset, cached, useLegacyAudioCompatibility);
       }
       const remoteRelativePath = path.posix.join("projects", projectId, folder, remoteFileName(asset.path));
       const remoteAbsolutePath = path.posix.join(workspaceRoot, remoteRelativePath);
       this.emitSnapshot({ ...this.snapshot, status: "running", message: `正在上传服务器素材：${asset.name}` });
       await uploadFile(settings, `/api/files/upload?path=${encodeURIComponent(remoteRelativePath)}`, asset.path);
       assetMap.set(asset.path, remoteAbsolutePath);
-      return { ...asset, path: remoteAbsolutePath };
+      return toRemoteAsset(asset, remoteAbsolutePath, useLegacyAudioCompatibility);
     };
 
     const slots = [];
@@ -324,6 +328,15 @@ function normalizeServerUrl(value: string): string {
 
 function supportsAudioPipeline(health: RemoteHealth): boolean {
   return (health.audioPipelineVersion ?? 0) >= MIN_SERVER_AUDIO_PIPELINE_VERSION;
+}
+
+export function toRemoteAsset(asset: AssetInfo, remotePath: string, useLegacyAudioCompatibility: boolean): AssetInfo {
+  if (useLegacyAudioCompatibility && asset.kind === "video" && asset.hasAudio === true) {
+    // Older servers re-probe uploaded videos and can falsely report no audio.
+    // Their exporter only uses kind to decide whether to re-probe, not to render video.
+    return { ...asset, path: remotePath, kind: "audio" };
+  }
+  return { ...asset, path: remotePath };
 }
 
 function shouldDownloadRemoteOutputs(config: MixProjectConfig): boolean {
