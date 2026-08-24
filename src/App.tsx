@@ -50,6 +50,12 @@ import type {
   UpdateReleaseNotes,
   UpdateSnapshot
 } from "./shared/types";
+import {
+  findRejectedCloudLabelIds,
+  flattenSelectableCloudLabels,
+  parseCloudLabelIds,
+  reconcileCloudLabelIds
+} from "./shared/cloudLabels";
 
 const emptyJob: BatchJobSnapshot = {
   id: "idle",
@@ -707,7 +713,21 @@ function TaskWorkspace({
     setCloudNamePrefix(profile.namePrefix);
     await loadCloudTaxonomy(profile.videoType);
     if (profile.twoLevelTypeId) {
-      await loadCloudLabelsForSelection(profile.videoType, profile.oneLevelTypeId, profile.twoLevelTypeId);
+      const labels = await loadCloudLabelsForSelection(profile.videoType, profile.oneLevelTypeId, profile.twoLevelTypeId);
+      if (labels) {
+        const { validLabelIds, invalidLabelIds } = reconcileCloudLabelIds(profile.labelIds, labels);
+        if (invalidLabelIds.length > 0) {
+          setCloudImportMeta({
+            videoType: profile.videoType,
+            oneLevelTypeId: profile.oneLevelTypeId,
+            twoLevelTypeId: profile.twoLevelTypeId,
+            labelIds: validLabelIds.join(","),
+            videoRight: profile.videoRight
+          });
+          setCloudStatus(`配置“${profile.name}”含有当前分类不可用的标签：${invalidLabelIds.join("、")}，已移除。请重新选择标签后保存配置。`);
+          return;
+        }
+      }
     }
     setCloudStatus(`已应用配置：${profile.name}`);
   }
@@ -902,8 +922,8 @@ function TaskWorkspace({
     }
   }
 
-  async function loadCloudLabelsForSelection(videoType: number, oneLevelTypeId: string, twoLevelTypeId: string) {
-    if (!api || !twoLevelTypeId) return;
+  async function loadCloudLabelsForSelection(videoType: number, oneLevelTypeId: string, twoLevelTypeId: string): Promise<CloudVideoLabel[] | undefined> {
+    if (!api || !twoLevelTypeId) return undefined;
     try {
       const labels = await api.listCloudVideoLabels({
         videoType,
@@ -911,9 +931,43 @@ function TaskWorkspace({
         twoLevelTypeIds: twoLevelTypeId
       });
       setCloudVideoLabels(labels);
+      return labels;
     } catch (err) {
       setCloudStatus(toMessage(err));
+      return undefined;
     }
+  }
+
+  async function refreshCloudLabelsBeforePublish(): Promise<boolean> {
+    if (!api) return false;
+    const labels = await loadCloudLabelsForSelection(
+      cloudImportMeta.videoType,
+      cloudImportMeta.oneLevelTypeId,
+      cloudImportMeta.twoLevelTypeId
+    );
+    if (!labels) {
+      return false;
+    }
+    const { validLabelIds, invalidLabelIds } = reconcileCloudLabelIds(cloudImportMeta.labelIds, labels);
+    if (invalidLabelIds.length === 0) {
+      return true;
+    }
+    setCloudImportMeta({ ...cloudImportMeta, labelIds: validLabelIds.join(",") });
+    setCloudStatus(`云管家标签已失效或不属于当前分类：${invalidLabelIds.join("、")}。已从当前选择移除，请重新选择标签后保存配置。`);
+    return false;
+  }
+
+  function applyRejectedCloudLabelIds(importJob: CloudImportJob) {
+    const rejectedLabelIds = findRejectedCloudLabelIds(importJob.errorList);
+    if (rejectedLabelIds.length === 0) {
+      return;
+    }
+    setCloudImportMeta((current) => ({
+      ...current,
+      labelIds: parseCloudLabelIds(current.labelIds)
+        .filter((labelId) => !rejectedLabelIds.includes(labelId))
+        .join(",")
+    }));
   }
 
   async function searchCloudVideos(nextQuery: CloudVideoListQuery = cloudQuery) {
@@ -1040,8 +1094,7 @@ function TaskWorkspace({
       setCloudStatus("请先选择云管家标签，当前接口要求标签必填");
       return;
     }
-    if (!isValidCloudLabelSelection(cloudImportMeta.labelIds, flattenedLabels)) {
-      setCloudStatus("请选择当前分类下的二级标签");
+    if (!(await refreshCloudLabelsBeforePublish())) {
       return;
     }
     if (!cloudUserReady) {
@@ -1081,10 +1134,9 @@ function TaskWorkspace({
         })
       );
       setCloudStatus(
-        result.importJob.errorList.length > 0
-          ? `已上传 ${result.uploaded.length} 个本地成片${formatSkippedUploadSummary(result.skipped)}，提交导入后有 ${result.importJob.errorList.length} 条校验错误：${formatImportErrors(result.importJob.errorList)}`
-          : `已上传 ${result.uploaded.length} 个本地成片${formatSkippedUploadSummary(result.skipped)}，并提交云管家导入`
+        formatCloudImportSubmissionStatus(result.uploaded.length, result.skipped, result.importJob)
       );
+      applyRejectedCloudLabelIds(result.importJob);
     } catch (err) {
       setCloudStatus(toMessage(err));
     } finally {
@@ -1102,12 +1154,12 @@ function TaskWorkspace({
       await openLocalExports();
       return;
     }
+    const hasAllPublicUrls = cloudImportRows.length > 0 && cloudImportRows.every((row) => row.url.trim());
+    if (hasAllPublicUrls) {
+      await submitCloudImport(cloudImportRows, false);
+      return;
+    }
     if (!cloudSettings.hasUploadToken) {
-      const hasAllPublicUrls = cloudImportRows.length > 0 && cloudImportRows.every((row) => row.url.trim());
-      if (hasAllPublicUrls) {
-        await submitCloudImport(cloudImportRows, false);
-        return;
-      }
       setCloudStatus("发布失败：缺少云管家上传授权，无法直传本地 mp4。请在云管家登录里点击自动获取上传授权，或给每条视频填公网 URL 后导入。");
       return;
     }
@@ -1154,8 +1206,7 @@ function TaskWorkspace({
       setCloudStatus("请先选择云管家标签，当前接口要求标签必填");
       return;
     }
-    if (!isValidCloudLabelSelection(cloudImportMeta.labelIds, flattenedLabels)) {
-      setCloudStatus("请选择当前分类下的二级标签");
+    if (!(await refreshCloudLabelsBeforePublish())) {
       return;
     }
     if (!cloudUserReady) {
@@ -1187,10 +1238,9 @@ function TaskWorkspace({
       const result = await api.importCloudVideos(videos);
       setCloudImportRequestId(result.requestId);
       setCloudStatus(
-        result.errorList.length > 0
-          ? `已提交，${result.errorList.length} 条校验错误：${formatImportErrors(result.errorList)}`
-          : "已提交云管家导入"
+        formatCloudImportSubmissionStatus(undefined, undefined, result)
       );
+      applyRejectedCloudLabelIds(result);
     } catch (err) {
       setCloudStatus(toMessage(err));
     } finally {
@@ -2994,6 +3044,25 @@ function formatSkippedUploadSummary(skipped?: Array<{ reason: string }>): string
   return skipped?.length ? `；已跳过 ${skipped.length} 个未生成成片` : "";
 }
 
+function formatCloudImportSubmissionStatus(
+  uploadedCount: number | undefined,
+  skipped: Array<{ reason: string }> | undefined,
+  importJob: CloudImportJob
+): string {
+  const rejectedLabelIds = findRejectedCloudLabelIds(importJob.errorList);
+  const rejectedLabelMessage =
+    rejectedLabelIds.length > 0
+      ? `；云管家拒绝了标签 ${rejectedLabelIds.join("、")}，已从当前选择移除。重新选择标签并保存配置后点击发布，已上传视频会直接再次导入，不会重复上传。`
+      : "";
+  if (importJob.errorList.length === 0) {
+    return uploadedCount === undefined
+      ? "已提交云管家导入"
+      : `已上传 ${uploadedCount} 个本地成片${formatSkippedUploadSummary(skipped)}，并提交云管家导入`;
+  }
+  const prefix = uploadedCount === undefined ? "已提交" : `已上传 ${uploadedCount} 个本地成片${formatSkippedUploadSummary(skipped)}，提交导入后`;
+  return `${prefix}有 ${importJob.errorList.length} 条校验错误：${formatImportErrors(importJob.errorList)}${rejectedLabelMessage}`;
+}
+
 function buildCloudImportRowsFromPaths(filePaths: string[], publicUrlPrefix: string): CloudImportRow[] {
   return filePaths.map((filePath) => buildCloudImportRow(filePath, publicUrlPrefix));
 }
@@ -3050,29 +3119,6 @@ function cloudImportStatus(status: number): string {
     default:
       return String(status);
   }
-}
-
-function flattenSelectableCloudLabels(labels: CloudVideoLabel[]): CloudVideoLabel[] {
-  return labels.flatMap((label) => {
-    const children = label.children ? flattenSelectableCloudLabels(label.children) : [];
-    return label.level === 2 ? [label, ...children] : children;
-  });
-}
-
-function isValidCloudLabelSelection(labelIds: string, labels: CloudVideoLabel[]): boolean {
-  const allowedIds = new Set(labels.map((label) => String(label.id)));
-  return parseCloudLabelIds(labelIds).every((labelId) => allowedIds.has(labelId));
-}
-
-function parseCloudLabelIds(labelIds: string): string[] {
-  return Array.from(
-    new Set(
-      labelIds
-        .split(",")
-        .map((labelId) => labelId.trim())
-        .filter(Boolean)
-    )
-  );
 }
 
 function formatImportErrors(errorList: CloudImportJob["errorList"]): string {
