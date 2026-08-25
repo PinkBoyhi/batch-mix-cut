@@ -8,6 +8,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { scanProject } from "../services/projectScanner.js";
 import { JobManager } from "../services/jobManager.js";
 import { YunguanjiaClient } from "../services/yunguanjiaClient.js";
+import { resolveWorkflowTitle } from "../services/workflowTitle.js";
 import { DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_JS } from "./dashboardPage.js";
 import { FeishuNotifier } from "./feishuNotifier.js";
 import { WorkflowStore } from "./workflowStore.js";
@@ -350,7 +351,7 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
   const id = `srv_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const existingWorkflow = requestedWorkflowId ? workflowStore.get(requestedWorkflowId) : undefined;
   const workflow = existingWorkflow ?? workflowStore.create({
-    displayName: path.basename(config.projectDir || config.outputDir) || id,
+    displayName: resolveWorkflowTitle(config),
     executionTarget: "server",
     exportTarget: config.exportTarget,
     totalVideos: config.maxCombinations

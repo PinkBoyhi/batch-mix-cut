@@ -253,6 +253,7 @@ function registerIpc(): void {
     const config: MixProjectConfig = {
       projectDir: outputDir,
       outputDir,
+      workflowTitle: path.basename(outputDir),
       slots: [],
       bgmAssets: [],
       bgmRange: {

@@ -69,6 +69,7 @@ export async function scanProject(projectDir: string, templateDraftOverride?: st
   const config: MixProjectConfig = {
     projectDir,
     outputDir,
+    workflowTitle: path.basename(projectDir),
     slots,
     bgmAssets,
     bgmRange: {

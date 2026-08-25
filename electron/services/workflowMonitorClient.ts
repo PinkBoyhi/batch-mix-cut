@@ -8,6 +8,7 @@ import type {
   WorkflowPatchInput,
   WorkflowRecord
 } from "../../src/shared/types.js";
+import { resolveWorkflowTitle } from "./workflowTitle.js";
 
 const CONFIG_FILE = "remote-mix-server.json";
 
@@ -46,7 +47,7 @@ export class WorkflowMonitorClient {
     this.settings = await this.readSettings().catch(() => undefined);
     if (!this.settings?.serverUrl || !this.settings.token) return undefined;
     const input: WorkflowCreateInput = {
-      displayName: path.basename(config.outputDir) || config.outputNamePattern || "混剪任务",
+      displayName: resolveWorkflowTitle(config),
       uploaderName: uploader.uploaderName,
       uploaderLogin: uploader.uploaderLogin,
       taskId,

@@ -1456,7 +1456,16 @@ function TaskWorkspace({
             </label>
 
             <label className="field">
-              <span>名称</span>
+              <span>任务标题</span>
+              <input
+                value={config.workflowTitle ?? ""}
+                placeholder="例如：术后护理脚本"
+                onChange={(event) => updateConfig({ workflowTitle: event.target.value })}
+              />
+            </label>
+
+            <label className="field">
+              <span>成片名称</span>
               <input
                 value={config.outputNamePattern ?? ""}
                 placeholder="成品"

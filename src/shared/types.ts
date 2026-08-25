@@ -74,6 +74,7 @@ export interface BgmTrack {
 export interface MixProjectConfig {
   projectDir: string;
   outputDir: string;
+  workflowTitle?: string;
   slots: SegmentSlot[];
   bgmAssets: AssetInfo[];
   bgmRange: BgmSegmentRange;
