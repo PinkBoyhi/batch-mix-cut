@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WorkflowRecord } from "../../src/shared/types.js";
-import { buildFeishuPayload, createFeishuSignature, FeishuNotifier } from "./feishuNotifier.js";
+import { buildFeishuCard, buildFeishuPayload, createFeishuSignature, FeishuNotifier } from "./feishuNotifier.js";
 
 describe("FeishuNotifier", () => {
   it("生成带签名和看板链接的飞书卡片", () => {
@@ -21,7 +21,29 @@ describe("FeishuNotifier", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("未配置 Webhook 时安全跳过", async () => {
+  it("使用应用凭证向指定群发送卡片", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 0 }), { status: 200 }));
+    const notifier = new FeishuNotifier({
+      appId: "app-id",
+      appSecret: "app-secret",
+      chatId: "chat-id",
+      dashboardUrl: "http://10.0.0.133:8787",
+      fetchImpl
+    });
+
+    await expect(notifier.notify(record())).resolves.toEqual({ status: "sent" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]?.[0]).toContain("tenant_access_token");
+    expect(fetchImpl.mock.calls[1]?.[0]).toContain("receive_id_type=chat_id");
+    const request = JSON.parse(String((fetchImpl.mock.calls[1]?.[1] as RequestInit).body));
+    expect(request.receive_id).toBe("chat-id");
+    expect(request.content).toContain("云管家上传成功");
+    expect(buildFeishuCard(record(), "http://10.0.0.133:8787")).toEqual(expect.objectContaining({ header: expect.any(Object) }));
+  });
+
+  it("未配置机器人时安全跳过", async () => {
     await expect(new FeishuNotifier().notify(record())).resolves.toEqual({ status: "disabled" });
   });
 });

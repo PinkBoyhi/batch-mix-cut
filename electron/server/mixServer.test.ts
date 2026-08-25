@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveCloudUploadVideos } from "./mixServer.js";
+import type { WorkflowRecord } from "../../src/shared/types.js";
+import { resolveCloudUploadVideos, shouldNotifyWorkflow } from "./mixServer.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -48,3 +49,37 @@ describe("resolveCloudUploadVideos", () => {
     ]);
   });
 });
+
+describe("shouldNotifyWorkflow", () => {
+  it("只在云管家返回最终结果后发送成功提醒", () => {
+    const unconfirmed = workflowRecord({ status: "success", stage: "completed" });
+    expect(shouldNotifyWorkflow(unconfirmed)).toBe(false);
+    expect(shouldNotifyWorkflow({ ...unconfirmed, cloudRequestId: "request-1" })).toBe(true);
+  });
+
+  it("上传失败、超时或中断仍会提醒", () => {
+    expect(shouldNotifyWorkflow(workflowRecord({ status: "failed", stage: "failed" }))).toBe(true);
+    expect(shouldNotifyWorkflow(workflowRecord({ status: "attention", stage: "attention" }))).toBe(true);
+    expect(shouldNotifyWorkflow(workflowRecord({ status: "interrupted", stage: "interrupted" }))).toBe(true);
+  });
+});
+
+function workflowRecord(overrides: Partial<WorkflowRecord>): WorkflowRecord {
+  return {
+    id: "wf-1",
+    displayName: "测试任务",
+    executionTarget: "server",
+    exportTarget: "cloud",
+    stage: "mixing",
+    status: "active",
+    progress: { current: 0, total: 1, percent: 0, unit: "videos", message: "处理中" },
+    totalVideos: 1,
+    succeededVideos: 0,
+    failedVideos: 0,
+    startedAt: "2026-08-25T00:00:00.000Z",
+    updatedAt: "2026-08-25T00:00:00.000Z",
+    timeline: [],
+    videos: [],
+    ...overrides
+  };
+}

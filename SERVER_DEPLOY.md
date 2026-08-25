@@ -12,6 +12,9 @@ MIX_SERVER_TOKEN="替换为一段随机长密码" \
 MIX_SERVER_MAX_CONCURRENT_JOBS=2 \
 FEISHU_BOT_WEBHOOK="https://open.feishu.cn/open-apis/bot/v2/hook/替换为机器人地址" \
 FEISHU_BOT_SECRET="机器人开启签名校验时填写，否则留空" \
+FEISHU_APP_ID="也可以填写飞书自建应用 App ID" \
+FEISHU_APP_SECRET="飞书自建应用 App Secret" \
+FEISHU_CHAT_ID="接收提醒的群会话 ID" \
 MIX_DASHBOARD_URL="http://10.0.0.133:8787" \
 pnpm server -- --workspace /home/fczj/mix-work
 ```
@@ -30,9 +33,10 @@ http://10.0.0.133:8787/dashboard
 
 - `FEISHU_BOT_WEBHOOK`：目标飞书群的自定义机器人 Webhook；不填则只使用看板。
 - `FEISHU_BOT_SECRET`：飞书机器人开启“签名校验”后填写，没有开启时可以留空。
+- `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_CHAT_ID`：使用飞书自建应用机器人时填写；与 Webhook 二选一，Webhook 配置存在时优先使用 Webhook。
 - `MIX_DASHBOARD_URL`：手机能访问的服务器地址，飞书消息会附带看板链接。
 
-飞书通知发送失败会自动重试 3 次，不会影响混剪或云管家上传结果。
+成功提醒仅在云管家返回最终成功或部分成功结果后发送；混剪完成、文件上传完成但云端仍在处理时不会提前通知。上传失败、处理超时或任务意外中断会发送异常提醒。飞书通知发送失败会自动重试 3 次，不会影响混剪或云管家上传结果。
 
 ## 升级到 0.1.28 及以上
 

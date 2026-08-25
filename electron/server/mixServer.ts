@@ -19,6 +19,7 @@ import type {
   MixProjectConfig,
   WorkflowCreateInput,
   WorkflowPatchInput,
+  WorkflowRecord,
   WorkflowStatus
 } from "../../src/shared/types.js";
 
@@ -46,6 +47,9 @@ const workflowStore = new WorkflowStore(workspaceRoot);
 const feishuNotifier = new FeishuNotifier({
   webhook: process.env.FEISHU_BOT_WEBHOOK,
   secret: process.env.FEISHU_BOT_SECRET,
+  appId: process.env.FEISHU_APP_ID,
+  appSecret: process.env.FEISHU_APP_SECRET,
+  chatId: process.env.FEISHU_CHAT_ID,
   dashboardUrl: process.env.MIX_DASHBOARD_URL
 });
 let dispatchingJobs = false;
@@ -55,12 +59,16 @@ async function main(): Promise<void> {
   await fs.mkdir(path.join(workspaceRoot, "projects"), { recursive: true });
   await workflowStore.initialize();
   workflowStore.on("terminal", (record) => {
+    if (!shouldNotifyWorkflow(record)) {
+      workflowStore.setNotification(record.id, "disabled");
+      return;
+    }
     void feishuNotifier.notify(record).then((result) => {
       workflowStore.setNotification(record.id, result.status, result.error);
     });
   });
   for (const interrupted of workflowStore.list("interrupted", 500)) {
-    if (interrupted.notificationStatus === "pending") {
+    if (interrupted.notificationStatus === "pending" && shouldNotifyWorkflow(interrupted)) {
       void feishuNotifier.notify(interrupted).then((result) => {
         workflowStore.setNotification(interrupted.id, result.status, result.error);
       });
@@ -487,6 +495,17 @@ function syncWorkflowFromJob(job: ServerJob, snapshot: BatchJobSnapshot): void {
       });
       return;
     }
+    if (job.config.exportMode !== "draft" && ["cloud", "both"].includes(job.config.exportTarget)) {
+      workflowStore.update(job.workflowId, {
+        stage: "cloud_upload",
+        status: "active",
+        progress: { current: 0, total: snapshot.completed, percent: 0, unit: "videos", message: "混剪完成，等待上传云管家" },
+        totalVideos: total,
+        succeededVideos: snapshot.completed,
+        failedVideos: snapshot.failed
+      });
+      return;
+    }
     workflowStore.update(job.workflowId, {
       stage: "completed",
       status: snapshot.failed > 0 ? "partial" : "success",
@@ -497,6 +516,13 @@ function syncWorkflowFromJob(job: ServerJob, snapshot: BatchJobSnapshot): void {
       finishedAt: snapshot.finishedAt
     });
   }
+}
+
+export function shouldNotifyWorkflow(record: WorkflowRecord): boolean {
+  if (["failed", "stopped", "interrupted", "attention"].includes(record.status)) return true;
+  if (!["cloud", "both"].includes(record.exportTarget)) return false;
+  if (!["success", "partial"].includes(record.status)) return false;
+  return record.stage === "completed" && Boolean(record.cloudRequestId);
 }
 
 function isWorkflowStatus(value: string | undefined): value is WorkflowStatus {
