@@ -20,18 +20,23 @@ import { probeAsset } from "./services/mediaProbe.js";
 import { YunguanjiaClient } from "./services/yunguanjiaClient.js";
 import { CloudPublishProfileStore } from "./services/cloudPublishProfiles.js";
 import { RemoteMixClient } from "./services/remoteMixClient.js";
+import { WorkflowMonitorClient } from "./services/workflowMonitorClient.js";
+import { monitorCloudImport } from "./services/cloudImportMonitor.js";
 import { UpdateManager } from "./services/updateManager.js";
 import { assetId, isVideoFile, naturalCompare } from "./utils/path.js";
 import type {
   AssetKind,
   AssetInfo,
   CloudImportVideo,
+  CloudImportJob,
   CloudLocalUploadVideo,
+  CloudUploadProgress,
   CloudPublishProfileInput,
   CloudSettings,
   CloudVideoListQuery,
   MixProjectConfig,
-  RemoteMixSettings
+  RemoteMixSettings,
+  WorkflowVideoResult
 } from "../src/shared/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -47,6 +52,8 @@ let mainWindow: BrowserWindow | undefined;
 interface TaskRuntime {
   jobManager: JobManager;
   remoteMixClient: RemoteMixClient;
+  monitorClient: WorkflowMonitorClient;
+  currentConfig?: MixProjectConfig;
 }
 
 const taskRuntimes = new Map<string, TaskRuntime>();
@@ -167,11 +174,15 @@ function getRuntimeKey(webContents: WebContents, taskId: string): string {
 function createTaskRuntime(webContents: WebContents, taskId: string): TaskRuntime {
   const jobManager = new JobManager();
   const remoteMixClient = new RemoteMixClient(() => app.getPath("userData"));
-  const runtime = { jobManager, remoteMixClient };
+  const monitorClient = new WorkflowMonitorClient(() => app.getPath("userData"));
+  const runtime: TaskRuntime = { jobManager, remoteMixClient, monitorClient };
   taskRuntimes.set(getRuntimeKey(webContents, taskId), runtime);
   jobManager.on("update", (snapshot) => {
     if (!webContents.isDestroyed()) {
       webContents.send("job:update", { taskId, snapshot });
+    }
+    if (runtime.currentConfig) {
+      void monitorClient.reportLocalJob(snapshot, runtime.currentConfig);
     }
   });
   remoteMixClient.on("update", (snapshot) => {
@@ -295,13 +306,35 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("job:start", async (event, taskId: string, config: MixProjectConfig) => {
-    return getTaskRuntime(event, taskId).jobManager.start(config);
+    const runtime = getTaskRuntime(event, taskId);
+    runtime.currentConfig = config;
+    const monitorStart = getCurrentWorkflowUploader().then((uploader) => runtime.monitorClient.start(taskId, config, "local", uploader));
+    const snapshot = await runtime.jobManager.start(config);
+    void monitorStart.then(() => runtime.monitorClient.reportLocalJob(runtime.jobManager.getSnapshot(), config));
+    return snapshot;
   });
 
   ipcMain.handle("remote:get-settings", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.getSettingsView());
   ipcMain.handle("remote:save-settings", async (event, taskId: string, settings: RemoteMixSettings) => getTaskRuntime(event, taskId).remoteMixClient.saveSettings(settings));
   ipcMain.handle("remote:test-server", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.testConnection());
-  ipcMain.handle("remote:start", async (event, taskId: string, config: MixProjectConfig) => getTaskRuntime(event, taskId).remoteMixClient.start(config));
+  ipcMain.handle("remote:start", async (event, taskId: string, config: MixProjectConfig) => {
+    const runtime = getTaskRuntime(event, taskId);
+    runtime.currentConfig = config;
+    await runtime.monitorClient.start(taskId, config, "server", await getCurrentWorkflowUploader());
+    try {
+      return await runtime.remoteMixClient.start(config, runtime.monitorClient);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await runtime.monitorClient.update({
+        stage: "failed",
+        status: "failed",
+        error: message,
+        progress: { message },
+        finishedAt: new Date().toISOString()
+      });
+      throw error;
+    }
+  });
   ipcMain.handle("remote:pause", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.pause());
   ipcMain.handle("remote:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.resume());
   ipcMain.handle("remote:stop", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.stop());
@@ -343,11 +376,183 @@ function registerIpc(): void {
   ipcMain.handle("cloud:get-raw-url", async (_event, videoId: number, isInner: 0 | 1) => {
     return cloudClient.getRawUrl(videoId, isInner);
   });
-  ipcMain.handle("cloud:import-videos", async (_event, videos: CloudImportVideo[]) => cloudClient.importVideos(videos));
-  ipcMain.handle("cloud:upload-local-videos", async (_event, videos: CloudLocalUploadVideo[]) => cloudClient.uploadLocalVideos(videos));
+  ipcMain.handle("cloud:import-videos", async (event, taskId: string, videos: CloudImportVideo[]) => {
+    const runtime = getTaskRuntime(event, taskId);
+    await ensureCloudWorkflow(runtime, taskId, videos.map((video) => video.videoName));
+    await runtime.monitorClient.update({
+      stage: "cloud_processing",
+      status: "active",
+      totalVideos: videos.length,
+      progress: { current: 0, total: videos.length, percent: 0, unit: "videos", message: "正在提交云管家处理" }
+    });
+    try {
+      const importJob = await cloudClient.importVideos(videos);
+      startCloudResultMonitor(event.sender, taskId, runtime, videos.map((video) => video.videoName), importJob);
+      return importJob;
+    } catch (error) {
+      await reportCloudFailure(event.sender, taskId, runtime, error);
+      throw error;
+    }
+  });
+  ipcMain.handle("cloud:upload-local-videos", async (event, taskId: string, videos: CloudLocalUploadVideo[]) => {
+    const runtime = getTaskRuntime(event, taskId);
+    const videoNames = videos.map((video) => video.videoName);
+    await ensureCloudWorkflow(runtime, taskId, videoNames);
+    const videoStates: WorkflowVideoResult[] = videoNames.map((videoName) => ({ videoName, status: "pending" }));
+    try {
+      const result = await cloudClient.uploadLocalVideos(videos, (progress) => {
+        const currentVideo = videoStates[progress.index];
+        if (currentVideo) {
+          currentVideo.status = progress.phase === "uploaded" ? "processing" : "uploading";
+          currentVideo.message = progress.phase === "preparing" ? "正在准备上传" : progress.phase === "uploaded" ? "上传完成，等待提交" : "正在上传";
+          currentVideo.bytesUploaded = progress.bytesUploaded;
+          currentVideo.bytesTotal = progress.bytesTotal;
+        }
+        const completed = progress.phase === "uploaded" ? progress.index + 1 : progress.index;
+        const update: CloudUploadProgress = {
+          taskId,
+          stage: progress.phase === "submitting" ? "processing" : "uploading",
+          current: completed,
+          total: progress.total,
+          message: progress.phase === "submitting"
+            ? "成片上传完成，正在提交云管家处理"
+            : `正在上传 ${progress.index + 1}/${progress.total}：${progress.videoName}`,
+          bytesUploaded: progress.bytesUploaded,
+          bytesTotal: progress.bytesTotal,
+          videos: structuredClone(videoStates)
+        };
+        if (!event.sender.isDestroyed()) event.sender.send("cloud:progress", update);
+        void runtime.monitorClient.update({
+          stage: progress.phase === "submitting" ? "cloud_processing" : "cloud_upload",
+          status: "active",
+          totalVideos: progress.total,
+          progress: progress.bytesTotal
+            ? { current: progress.bytesUploaded ?? 0, total: progress.bytesTotal, unit: "bytes", message: update.message }
+            : { current: completed, total: progress.total, unit: "videos", message: update.message },
+          videos: structuredClone(videoStates)
+        }, progress.phase === "uploading");
+      });
+      startCloudResultMonitor(event.sender, taskId, runtime, videoNames, result.importJob);
+      return result;
+    } catch (error) {
+      await reportCloudFailure(event.sender, taskId, runtime, error, videoStates);
+      throw error;
+    }
+  });
   ipcMain.handle("cloud:query-import-result", async (_event, requestId: string, pageNo = 1, pageSize = 20) => {
     return cloudClient.queryImportResult(requestId, pageNo, pageSize);
   });
+}
+
+async function ensureCloudWorkflow(runtime: TaskRuntime, taskId: string, videoNames: string[]): Promise<void> {
+  const uploader = await getCurrentWorkflowUploader();
+  if (!runtime.monitorClient.id) {
+    const displayName = runtime.currentConfig
+      ? path.basename(runtime.currentConfig.outputDir) || "云管家发布任务"
+      : `云管家上传 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+    await runtime.monitorClient.startCloudOnly(taskId, displayName, videoNames.length, uploader);
+    return;
+  }
+  await runtime.monitorClient.update(uploader);
+}
+
+async function getCurrentWorkflowUploader(): Promise<{ uploaderName?: string; uploaderLogin?: string }> {
+  const settings = await cloudClient.getSettingsView().catch(() => undefined);
+  return {
+    uploaderName: settings?.accountName || undefined,
+    uploaderLogin: settings?.accountLogin || undefined
+  };
+}
+
+function startCloudResultMonitor(
+  webContents: WebContents,
+  taskId: string,
+  runtime: TaskRuntime,
+  videoNames: string[],
+  importJob: CloudImportJob
+): void {
+  void runtime.monitorClient.update({
+    stage: "cloud_processing",
+    status: "active",
+    cloudRequestId: importJob.requestId,
+    totalVideos: videoNames.length,
+    progress: { current: 0, total: videoNames.length, percent: 0, unit: "videos", message: "云管家正在处理成片" }
+  });
+  void monitorCloudImport({
+    requestId: importJob.requestId,
+    videoNames,
+    importJob,
+    query: (requestId, pageNo, pageSize) => cloudClient.queryImportResult(requestId, pageNo, pageSize),
+    onUpdate: async (update) => {
+      const terminal = update.status !== "processing";
+      const workflowStatus = update.status === "processing" ? "active" : update.status;
+      const workflowStage = update.status === "processing"
+        ? "cloud_processing"
+        : update.status === "attention"
+          ? "attention"
+          : update.status === "failed"
+            ? "failed"
+            : "completed";
+      await runtime.monitorClient.update({
+        stage: workflowStage,
+        status: workflowStatus,
+        cloudRequestId: importJob.requestId,
+        progress: {
+          current: update.succeeded + update.failed,
+          total: videoNames.length,
+          percent: terminal ? 100 : undefined,
+          unit: "videos",
+          message: update.message
+        },
+        totalVideos: videoNames.length,
+        succeededVideos: update.succeeded,
+        failedVideos: update.failed,
+        error: ["failed", "attention"].includes(update.status) ? update.message : undefined,
+        finishedAt: terminal ? new Date().toISOString() : undefined,
+        videos: update.videos
+      });
+      if (!webContents.isDestroyed()) {
+        webContents.send("cloud:progress", {
+          taskId,
+          stage: update.status === "processing" ? "processing" : update.status === "attention" ? "attention" : update.status === "failed" ? "failed" : "completed",
+          current: update.succeeded + update.failed,
+          total: videoNames.length,
+          message: update.message,
+          videos: update.videos
+        } satisfies CloudUploadProgress);
+      }
+      if (terminal) runtime.monitorClient.reset();
+    }
+  }).catch((error) => reportCloudFailure(webContents, taskId, runtime, error));
+}
+
+async function reportCloudFailure(
+  webContents: WebContents,
+  taskId: string,
+  runtime: TaskRuntime,
+  error: unknown,
+  videos?: WorkflowVideoResult[]
+): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  await runtime.monitorClient.update({
+    stage: "failed",
+    status: "failed",
+    error: message,
+    progress: { message },
+    finishedAt: new Date().toISOString(),
+    videos
+  });
+  if (!webContents.isDestroyed()) {
+    webContents.send("cloud:progress", {
+      taskId,
+      stage: "failed",
+      current: 0,
+      total: videos?.length ?? 0,
+      message,
+      videos
+    } satisfies CloudUploadProgress);
+  }
+  runtime.monitorClient.reset();
 }
 
 async function captureCloudUploadToken(loginUrl?: string, parentWindow?: BrowserWindow) {

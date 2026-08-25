@@ -126,6 +126,96 @@ export interface BatchJobSnapshot {
   finishedAt?: string;
 }
 
+export type WorkflowStage =
+  | "asset_transfer"
+  | "queued"
+  | "mixing"
+  | "output_download"
+  | "cloud_upload"
+  | "cloud_processing"
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "interrupted"
+  | "attention";
+
+export type WorkflowStatus = "active" | "success" | "partial" | "failed" | "stopped" | "interrupted" | "attention";
+
+export interface WorkflowProgress {
+  current: number;
+  total: number;
+  percent: number;
+  unit: "items" | "bytes" | "videos";
+  message: string;
+}
+
+export interface WorkflowVideoResult {
+  videoName: string;
+  status: "pending" | "uploading" | "processing" | "success" | "failed";
+  message?: string;
+  bytesUploaded?: number;
+  bytesTotal?: number;
+  videoId?: string | number;
+}
+
+export interface WorkflowTimelineEntry {
+  stage: WorkflowStage;
+  status: WorkflowStatus;
+  message: string;
+  at: string;
+}
+
+export interface WorkflowRecord {
+  id: string;
+  displayName: string;
+  uploaderName?: string;
+  uploaderLogin?: string;
+  taskId?: string;
+  executionTarget: MixExecutionTarget;
+  exportTarget: ExportTarget;
+  stage: WorkflowStage;
+  status: WorkflowStatus;
+  progress: WorkflowProgress;
+  totalVideos: number;
+  succeededVideos: number;
+  failedVideos: number;
+  cloudRequestId?: string;
+  error?: string;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+  notificationStatus?: "pending" | "sent" | "failed" | "disabled";
+  notificationError?: string;
+  timeline: WorkflowTimelineEntry[];
+  videos: WorkflowVideoResult[];
+}
+
+export interface WorkflowCreateInput {
+  id?: string;
+  displayName: string;
+  uploaderName?: string;
+  uploaderLogin?: string;
+  taskId?: string;
+  executionTarget: MixExecutionTarget;
+  exportTarget: ExportTarget;
+  totalVideos?: number;
+}
+
+export interface WorkflowPatchInput {
+  uploaderName?: string;
+  uploaderLogin?: string;
+  stage?: WorkflowStage;
+  status?: WorkflowStatus;
+  progress?: Partial<WorkflowProgress>;
+  totalVideos?: number;
+  succeededVideos?: number;
+  failedVideos?: number;
+  cloudRequestId?: string;
+  error?: string;
+  finishedAt?: string;
+  videos?: WorkflowVideoResult[];
+}
+
 export interface TaskJobUpdate {
   taskId: string;
   snapshot: BatchJobSnapshot;
@@ -295,6 +385,17 @@ export interface CloudLocalUploadJob {
   importJob: CloudImportJob;
 }
 
+export interface CloudUploadProgress {
+  taskId: string;
+  stage: "uploading" | "processing" | "completed" | "failed" | "attention";
+  current: number;
+  total: number;
+  message: string;
+  bytesUploaded?: number;
+  bytesTotal?: number;
+  videos?: WorkflowVideoResult[];
+}
+
 export interface CloudImportResult {
   videoId?: string | number;
   videoName: string;
@@ -383,12 +484,13 @@ export interface AppApi {
     videoType?: number;
   }) => Promise<CloudVideoLabel[]>;
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => Promise<string>;
-  importCloudVideos: (videos: CloudImportVideo[]) => Promise<CloudImportJob>;
-  uploadCloudLocalVideos: (videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
+  importCloudVideos: (taskId: string, videos: CloudImportVideo[]) => Promise<CloudImportJob>;
+  uploadCloudLocalVideos: (taskId: string, videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
   queryCloudImportResult: (
     requestId: string,
     pageNo?: number,
     pageSize?: number
   ) => Promise<CloudPage<CloudImportResult>>;
   onJobUpdate: (callback: (update: TaskJobUpdate) => void) => () => void;
+  onCloudProgress: (callback: (update: CloudUploadProgress) => void) => () => void;
 }

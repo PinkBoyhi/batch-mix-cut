@@ -8,7 +8,19 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { scanProject } from "../services/projectScanner.js";
 import { JobManager } from "../services/jobManager.js";
 import { YunguanjiaClient } from "../services/yunguanjiaClient.js";
-import type { BatchJobSnapshot, CloudLocalUploadJob, CloudLocalUploadVideo, CloudSettings, MixProjectConfig } from "../../src/shared/types.js";
+import { DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_JS } from "./dashboardPage.js";
+import { FeishuNotifier } from "./feishuNotifier.js";
+import { WorkflowStore } from "./workflowStore.js";
+import type {
+  BatchJobSnapshot,
+  CloudLocalUploadJob,
+  CloudLocalUploadVideo,
+  CloudSettings,
+  MixProjectConfig,
+  WorkflowCreateInput,
+  WorkflowPatchInput,
+  WorkflowStatus
+} from "../../src/shared/types.js";
 
 interface ServerJob {
   id: string;
@@ -17,6 +29,8 @@ interface ServerJob {
   config: MixProjectConfig;
   createdAt: string;
   started: boolean;
+  workflowId: string;
+  desktopTracked: boolean;
 }
 
 const host = readArg("--host", process.env.MIX_SERVER_HOST ?? "0.0.0.0");
@@ -28,11 +42,30 @@ const maxConcurrentJobs = Math.max(1, Number(process.env.MIX_SERVER_MAX_CONCURRE
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
 const audioPipelineVersion = 2;
 const jobs = new Map<string, ServerJob>();
+const workflowStore = new WorkflowStore(workspaceRoot);
+const feishuNotifier = new FeishuNotifier({
+  webhook: process.env.FEISHU_BOT_WEBHOOK,
+  secret: process.env.FEISHU_BOT_SECRET,
+  dashboardUrl: process.env.MIX_DASHBOARD_URL
+});
 let dispatchingJobs = false;
 
 async function main(): Promise<void> {
   await fs.mkdir(path.join(workspaceRoot, "uploads"), { recursive: true });
   await fs.mkdir(path.join(workspaceRoot, "projects"), { recursive: true });
+  await workflowStore.initialize();
+  workflowStore.on("terminal", (record) => {
+    void feishuNotifier.notify(record).then((result) => {
+      workflowStore.setNotification(record.id, result.status, result.error);
+    });
+  });
+  for (const interrupted of workflowStore.list("interrupted", 500)) {
+    if (interrupted.notificationStatus === "pending") {
+      void feishuNotifier.notify(interrupted).then((result) => {
+        workflowStore.setNotification(interrupted.id, result.status, result.error);
+      });
+    }
+  }
 
   const server = http.createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
@@ -47,6 +80,8 @@ async function main(): Promise<void> {
     console.log(`医博生物混剪服务器已启动：http://${host}:${port}`);
     console.log(`工作目录：${workspaceRoot}`);
     console.log(`访问 Token：${accessToken}`);
+    console.log(`进度看板：http://${host}:${port}/dashboard`);
+    console.log(`飞书提醒：${feishuNotifier.isEnabled() ? "已启用" : "未配置"}`);
   });
 }
 
@@ -57,6 +92,21 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (request.method === "OPTIONS") {
     response.writeHead(204);
     response.end();
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/dashboard") {
+    sendText(response, 200, DASHBOARD_HTML, "text/html; charset=utf-8");
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/dashboard/styles.css") {
+    sendText(response, 200, DASHBOARD_CSS, "text/css; charset=utf-8");
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/dashboard/app.js") {
+    sendText(response, 200, DASHBOARD_JS, "text/javascript; charset=utf-8");
     return;
   }
 
@@ -83,6 +133,45 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (request.method === "GET" && url.pathname === "/api/auth/check") {
     sendJson(response, 200, { ok: true });
     return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/workflows") {
+    const body = await readJson<WorkflowCreateInput>(request);
+    const record = workflowStore.create(body);
+    sendJson(response, 201, { ok: true, record });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/workflows") {
+    const rawStatus = url.searchParams.get("status") || undefined;
+    const status = isWorkflowStatus(rawStatus) ? rawStatus : undefined;
+    const limit = Number(url.searchParams.get("limit") ?? "200");
+    sendJson(response, 200, { ok: true, records: workflowStore.list(status, limit) });
+    return;
+  }
+
+  const workflowMatch = url.pathname.match(/^\/api\/workflows\/([^/]+)$/);
+  if (workflowMatch) {
+    const workflowId = decodeURIComponent(workflowMatch[1]);
+    if (request.method === "GET") {
+      const record = workflowStore.get(workflowId);
+      if (!record) {
+        sendJson(response, 404, { ok: false, error: "看板任务不存在" });
+        return;
+      }
+      sendJson(response, 200, { ok: true, record });
+      return;
+    }
+    if (request.method === "PATCH") {
+      const patch = await readJson<WorkflowPatchInput>(request);
+      const record = workflowStore.update(workflowId, patch);
+      if (!record) {
+        sendJson(response, 404, { ok: false, error: "看板任务不存在" });
+        return;
+      }
+      sendJson(response, 200, { ok: true, record });
+      return;
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/projects/upload") {
@@ -116,7 +205,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (request.method === "POST" && url.pathname === "/api/jobs/from-project") {
-    const body = await readJson<{ projectDir: string; templateDraftPath?: string; overrides?: Partial<MixProjectConfig> }>(request);
+    const body = await readJson<{ projectDir: string; templateDraftPath?: string; overrides?: Partial<MixProjectConfig>; workflowId?: string }>(request);
     assertAllowedPath(body.projectDir);
     if (body.templateDraftPath) {
       assertAllowedPath(body.templateDraftPath);
@@ -127,15 +216,15 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       ...(body.overrides ?? {})
     };
     validateConfigPaths(config);
-    const job = await startJob(config);
+    const job = await startJob(config, body.workflowId);
     sendJson(response, 200, { ok: true, jobId: job.id, snapshot: job.snapshot, warnings: scan.warnings });
     return;
   }
 
   if (request.method === "POST" && url.pathname === "/api/jobs") {
-    const body = await readJson<{ config: MixProjectConfig }>(request);
+    const body = await readJson<{ config: MixProjectConfig; workflowId?: string }>(request);
     validateConfigPaths(body.config);
-    const job = await startJob(body.config);
+    const job = await startJob(body.config, body.workflowId);
     sendJson(response, 200, { ok: true, jobId: job.id, snapshot: job.snapshot });
     return;
   }
@@ -182,6 +271,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           message: "已从服务器等待队列移除",
           finishedAt: new Date().toISOString()
         };
+        syncWorkflowFromJob(job, job.snapshot);
         await dispatchQueuedJobs();
         sendJson(response, 200, { ok: true, snapshot: job.snapshot });
         return;
@@ -210,6 +300,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         sendJson(response, 409, { ok: false, error: "服务器混剪任务尚未完成，暂时不能上传成片" });
         return;
       }
+      workflowStore.update(job.workflowId, {
+        stage: "cloud_upload",
+        status: "active",
+        progress: { current: 0, total: body.videos.length, percent: 0, unit: "videos", message: "正在上传成片到云管家" },
+        totalVideos: body.videos.length
+      });
       const client = new YunguanjiaClient(() => path.join(workspaceRoot, ".cloud"));
       await client.saveSettings(body.settings);
       const uploadPlan = await resolveCloudUploadVideos(path.join(job.config.outputDir, "videos"), body.videos);
@@ -222,6 +318,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         })),
         skipped: uploadPlan.skipped
       };
+      workflowStore.update(job.workflowId, {
+        stage: "cloud_processing",
+        status: "active",
+        cloudRequestId: result.importJob.requestId,
+        progress: {
+          current: result.uploaded.length,
+          total: body.videos.length,
+          percent: body.videos.length ? Math.round((result.uploaded.length / body.videos.length) * 100) : 100,
+          unit: "videos",
+          message: "成片已上传，等待云管家处理"
+        }
+      });
       sendJson(response, 200, { ok: true, result });
       return;
     }
@@ -230,8 +338,15 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   sendJson(response, 404, { ok: false, error: "接口不存在" });
 }
 
-async function startJob(config: MixProjectConfig): Promise<ServerJob> {
+async function startJob(config: MixProjectConfig, requestedWorkflowId?: string): Promise<ServerJob> {
   const id = `srv_${Date.now()}_${randomUUID().slice(0, 8)}`;
+  const existingWorkflow = requestedWorkflowId ? workflowStore.get(requestedWorkflowId) : undefined;
+  const workflow = existingWorkflow ?? workflowStore.create({
+    displayName: path.basename(config.projectDir || config.outputDir) || id,
+    executionTarget: "server",
+    exportTarget: config.exportTarget,
+    totalVideos: config.maxCombinations
+  });
   const manager = new JobManager();
   const job: ServerJob = {
     id,
@@ -248,11 +363,14 @@ async function startJob(config: MixProjectConfig): Promise<ServerJob> {
     },
     config,
     createdAt: new Date().toISOString(),
-    started: false
+    started: false,
+    workflowId: workflow.id,
+    desktopTracked: Boolean(existingWorkflow)
   };
   jobs.set(id, job);
   manager.on("update", (snapshot: BatchJobSnapshot) => {
     job.snapshot = snapshot;
+    syncWorkflowFromJob(job, snapshot);
     if (isTerminalStatus(snapshot.status)) {
       void dispatchQueuedJobs();
     }
@@ -273,6 +391,11 @@ async function dispatchQueuedJobs(): Promise<void> {
         return;
       }
       nextJob.started = true;
+      workflowStore.update(nextJob.workflowId, {
+        stage: "mixing",
+        status: "active",
+        progress: { current: 0, total: 0, percent: 0, unit: "videos", message: "服务器已分配资源，正在启动混剪" }
+      });
       try {
         nextJob.snapshot = await nextJob.manager.start(nextJob.config);
       } catch (error) {
@@ -282,6 +405,7 @@ async function dispatchQueuedJobs(): Promise<void> {
           message: error instanceof Error ? error.message : String(error),
           finishedAt: new Date().toISOString()
         };
+        syncWorkflowFromJob(nextJob, nextJob.snapshot);
       }
     }
   } finally {
@@ -301,6 +425,84 @@ function isTerminalStatus(status: BatchJobSnapshot["status"]): boolean {
   return status === "idle" || status === "completed" || status === "failed";
 }
 
+function syncWorkflowFromJob(job: ServerJob, snapshot: BatchJobSnapshot): void {
+  const total = snapshot.total || job.config.maxCombinations || 0;
+  const current = snapshot.completed + snapshot.failed;
+  const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+  if (snapshot.status === "queued") {
+    workflowStore.update(job.workflowId, {
+      stage: "queued",
+      status: "active",
+      progress: { current, total, percent, unit: "videos", message: snapshot.message },
+      totalVideos: total,
+      failedVideos: snapshot.failed
+    });
+    return;
+  }
+  if (["running", "paused", "stopping"].includes(snapshot.status)) {
+    workflowStore.update(job.workflowId, {
+      stage: "mixing",
+      status: "active",
+      progress: { current, total, percent, unit: "videos", message: snapshot.message },
+      totalVideos: total,
+      succeededVideos: snapshot.completed,
+      failedVideos: snapshot.failed
+    });
+    return;
+  }
+  if (snapshot.status === "failed") {
+    workflowStore.update(job.workflowId, {
+      stage: "failed",
+      status: "failed",
+      progress: { current, total, percent, unit: "videos", message: snapshot.message },
+      totalVideos: total,
+      succeededVideos: snapshot.completed,
+      failedVideos: Math.max(snapshot.failed, total - snapshot.completed),
+      error: snapshot.message,
+      finishedAt: snapshot.finishedAt
+    });
+    return;
+  }
+  if (snapshot.status === "idle") {
+    workflowStore.update(job.workflowId, {
+      stage: "stopped",
+      status: "stopped",
+      progress: { current, total, percent, unit: "videos", message: snapshot.message },
+      totalVideos: total,
+      succeededVideos: snapshot.completed,
+      failedVideos: snapshot.failed,
+      finishedAt: snapshot.finishedAt
+    });
+    return;
+  }
+  if (snapshot.status === "completed") {
+    if (job.desktopTracked && job.config.exportMode !== "draft") {
+      workflowStore.update(job.workflowId, {
+        stage: "output_download",
+        status: "active",
+        progress: { current: 0, total: snapshot.completed, percent: 0, unit: "videos", message: "混剪完成，等待下载成片" },
+        totalVideos: total,
+        succeededVideos: snapshot.completed,
+        failedVideos: snapshot.failed
+      });
+      return;
+    }
+    workflowStore.update(job.workflowId, {
+      stage: "completed",
+      status: snapshot.failed > 0 ? "partial" : "success",
+      progress: { current: total, total, percent: 100, unit: "videos", message: snapshot.failed > 0 ? "任务完成，部分组合失败" : "任务已完成" },
+      totalVideos: total,
+      succeededVideos: snapshot.completed,
+      failedVideos: snapshot.failed,
+      finishedAt: snapshot.finishedAt
+    });
+  }
+}
+
+function isWorkflowStatus(value: string | undefined): value is WorkflowStatus {
+  return ["active", "success", "partial", "failed", "stopped", "interrupted", "attention"].includes(value ?? "");
+}
+
 function readArg(name: string, fallback: string): string {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] ?? fallback : fallback;
@@ -313,12 +515,21 @@ function isAuthorized(request: IncomingMessage): boolean {
 function setCors(response: ServerResponse): void {
   response.setHeader("Access-Control-Allow-Origin", "*");
   response.setHeader("Access-Control-Allow-Headers", "content-type,x-mix-token");
-  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(data));
+}
+
+function sendText(response: ServerResponse, status: number, data: string, contentType: string): void {
+  response.writeHead(status, {
+    "content-type": contentType,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff"
+  });
+  response.end(data);
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {

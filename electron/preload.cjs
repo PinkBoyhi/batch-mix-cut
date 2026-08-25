@@ -44,14 +44,19 @@ const api = {
   listCloudVideoTypes: (videoType) => ipcRenderer.invoke("cloud:list-video-types", videoType),
   listCloudVideoLabels: (query) => ipcRenderer.invoke("cloud:list-video-labels", query),
   getCloudRawUrl: (videoId, isInner) => ipcRenderer.invoke("cloud:get-raw-url", videoId, isInner),
-  importCloudVideos: (videos) => ipcRenderer.invoke("cloud:import-videos", videos),
-  uploadCloudLocalVideos: (videos) => ipcRenderer.invoke("cloud:upload-local-videos", videos),
+  importCloudVideos: (taskId, videos) => ipcRenderer.invoke("cloud:import-videos", taskId, videos),
+  uploadCloudLocalVideos: (taskId, videos) => ipcRenderer.invoke("cloud:upload-local-videos", taskId, videos),
   queryCloudImportResult: (requestId, pageNo, pageSize) =>
     ipcRenderer.invoke("cloud:query-import-result", requestId, pageNo, pageSize),
   onJobUpdate: (callback) => {
     const listener = (_event, snapshot) => callback(snapshot);
     ipcRenderer.on("job:update", listener);
     return () => ipcRenderer.removeListener("job:update", listener);
+  },
+  onCloudProgress: (callback) => {
+    const listener = (_event, update) => callback(update);
+    ipcRenderer.on("cloud:progress", listener);
+    return () => ipcRenderer.removeListener("cloud:progress", listener);
   }
 };
 

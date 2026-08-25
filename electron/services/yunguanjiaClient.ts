@@ -41,6 +41,15 @@ interface StoredCloudSettings extends CloudSettings {
   accessTokenExpiresAt?: number;
 }
 
+export interface CloudUploadProgressEvent {
+  index: number;
+  total: number;
+  videoName: string;
+  phase: "preparing" | "uploading" | "uploaded" | "submitting";
+  bytesUploaded?: number;
+  bytesTotal?: number;
+}
+
 interface CloudResponse<T> {
   code: number;
   data?: T;
@@ -178,7 +187,10 @@ export class YunguanjiaClient {
     };
   }
 
-  async uploadLocalVideos(videos: CloudLocalUploadVideo[]): Promise<CloudLocalUploadJob> {
+  async uploadLocalVideos(
+    videos: CloudLocalUploadVideo[],
+    onProgress?: (event: CloudUploadProgressEvent) => void
+  ): Promise<CloudLocalUploadJob> {
     if (videos.length === 0) {
       throw new Error("没有待上传的本地成片");
     }
@@ -193,6 +205,7 @@ export class YunguanjiaClient {
 
     const uploaded: CloudLocalUploadJob["uploaded"] = [];
     for (const [index, video] of videos.entries()) {
+      onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "preparing" });
       if (!video.localPath.trim()) {
         throw new Error(`第 ${index + 1} 个视频缺少本地文件路径`);
       }
@@ -207,18 +220,23 @@ export class YunguanjiaClient {
       }
       const uploadPath = await this.prepareUploadFile(video);
       try {
-        const url = await this.uploadLocalFileByWebApi(settings, uploadPath);
+        const url = await this.uploadLocalFileByWebApi(settings, uploadPath, (bytesUploaded, bytesTotal) => {
+          onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "uploading", bytesUploaded, bytesTotal });
+        });
         uploaded.push({
           localPath: video.localPath,
           videoName: video.videoName,
           url
         });
+        onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "uploaded" });
       } finally {
         if (uploadPath !== video.localPath) {
           await fs.unlink(uploadPath).catch(() => undefined);
         }
       }
     }
+
+    onProgress?.({ index: videos.length, total: videos.length, videoName: "", phase: "submitting" });
 
     const importJob = await this.importVideos(
       videos.map((video, index) => ({
@@ -262,7 +280,11 @@ export class YunguanjiaClient {
     });
   }
 
-  private async uploadLocalFileByWebApi(settings: StoredCloudSettings, localPath: string): Promise<string> {
+  private async uploadLocalFileByWebApi(
+    settings: StoredCloudSettings,
+    localPath: string,
+    onProgress?: (bytesUploaded: number, bytesTotal: number) => void
+  ): Promise<string> {
     const stat = await fs.stat(localPath).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") {
         throw new Error(`本地视频不存在：${localPath}`);
@@ -284,7 +306,7 @@ export class YunguanjiaClient {
       try {
         const response = await postMultipartFile(url, createWebApiHeaders(settings.uploadToken ?? ""), {
           fileSuffix
-        }, localPath, stat.size);
+        }, localPath, stat.size, onProgress);
         const payload = parseUploadResponse(response, url);
         if (!payload.success || (typeof payload.code === "number" && payload.code !== 1)) {
           throw new Error(payload.info || "云管家本地文件上传失败");
@@ -640,7 +662,8 @@ async function postMultipartFile(
   requestHeaders: Record<string, string>,
   fields: Record<string, string>,
   filePath: string,
-  fileSize: number
+  fileSize: number,
+  onProgress?: (bytesUploaded: number, bytesTotal: number) => void
 ): Promise<{ status: number; text: string }> {
   const url = new URL(urlString);
   const boundary = `----batch-mix-${crypto.randomBytes(12).toString("hex")}`;
@@ -683,6 +706,11 @@ async function postMultipartFile(
     request.write(fileHeader);
     const stream = createReadStream(filePath);
     stream.on("error", (error) => request.destroy(error));
+    let uploaded = 0;
+    stream.on("data", (chunk: Buffer | string) => {
+      uploaded += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      onProgress?.(uploaded, fileSize);
+    });
     stream.on("end", () => request.end(trailer));
     stream.pipe(request, { end: false });
   });

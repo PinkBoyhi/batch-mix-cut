@@ -3,6 +3,7 @@ import type {
   AppApi,
   CloudImportVideo,
   CloudLocalUploadVideo,
+  CloudUploadProgress,
   CloudPublishProfileInput,
   CloudSettings,
   CloudVideoListQuery,
@@ -56,14 +57,19 @@ const api: AppApi = {
   listCloudVideoLabels: (query?: { oneLevelTypeId?: number; twoLevelTypeIds?: string; videoType?: number }) =>
     ipcRenderer.invoke("cloud:list-video-labels", query),
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => ipcRenderer.invoke("cloud:get-raw-url", videoId, isInner),
-  importCloudVideos: (videos: CloudImportVideo[]) => ipcRenderer.invoke("cloud:import-videos", videos),
-  uploadCloudLocalVideos: (videos: CloudLocalUploadVideo[]) => ipcRenderer.invoke("cloud:upload-local-videos", videos),
+  importCloudVideos: (taskId: string, videos: CloudImportVideo[]) => ipcRenderer.invoke("cloud:import-videos", taskId, videos),
+  uploadCloudLocalVideos: (taskId: string, videos: CloudLocalUploadVideo[]) => ipcRenderer.invoke("cloud:upload-local-videos", taskId, videos),
   queryCloudImportResult: (requestId: string, pageNo?: number, pageSize?: number) =>
     ipcRenderer.invoke("cloud:query-import-result", requestId, pageNo, pageSize),
   onJobUpdate: (callback: (update: TaskJobUpdate) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, update: TaskJobUpdate) => callback(update);
     ipcRenderer.on("job:update", listener);
     return () => ipcRenderer.removeListener("job:update", listener);
+  },
+  onCloudProgress: (callback: (update: CloudUploadProgress) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, update: CloudUploadProgress) => callback(update);
+    ipcRenderer.on("cloud:progress", listener);
+    return () => ipcRenderer.removeListener("cloud:progress", listener);
   }
 };
 

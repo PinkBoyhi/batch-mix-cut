@@ -14,6 +14,7 @@ import type {
   RemoteMixSettingsView
 } from "../../src/shared/types.js";
 import { createCombinations } from "./combinator.js";
+import { WorkflowMonitorClient } from "./workflowMonitorClient.js";
 
 const CONFIG_FILE = "remote-mix-server.json";
 const DEFAULT_SERVER_URL = "http://10.0.0.133:8787";
@@ -89,7 +90,7 @@ export class RemoteMixClient extends EventEmitter {
     };
   }
 
-  async start(config: MixProjectConfig): Promise<BatchJobSnapshot> {
+  async start(config: MixProjectConfig, monitor?: WorkflowMonitorClient): Promise<BatchJobSnapshot> {
     if (this.snapshot.status === "running" || this.snapshot.status === "paused") {
       throw new Error("已有服务器混剪任务正在运行");
     }
@@ -110,15 +111,23 @@ export class RemoteMixClient extends EventEmitter {
       health.workspaceRoot,
       projectId,
       config,
-      !supportsAudioPipeline(health)
+      !supportsAudioPipeline(health),
+      monitor
     );
     this.currentConfig = remoteConfig;
 
-    const response = await this.requestJson<RemoteJobResponse>(settings, "POST", "/api/jobs", { config: remoteConfig });
+    const response = await this.requestJson<RemoteJobResponse>(settings, "POST", "/api/jobs", {
+      config: remoteConfig,
+      workflowId: monitor?.id
+    });
     this.currentJobId = response.jobId;
     this.snapshot = response.snapshot;
     this.emitSnapshot({ ...this.snapshot, message: `服务器任务已开始：${response.jobId}` });
-    void this.pollUntilDone(settings, config);
+    void this.pollUntilDone(settings, config, monitor).catch(async (error) => {
+      const message = `服务器任务监控失败：${toErrorMessage(error)}`;
+      this.emitSnapshot({ ...this.snapshot, status: "failed", message, finishedAt: new Date().toISOString() });
+      await monitor?.update({ stage: "failed", status: "failed", error: message, progress: { message }, finishedAt: new Date().toISOString() });
+    });
     return this.snapshot;
   }
 
@@ -153,7 +162,11 @@ export class RemoteMixClient extends EventEmitter {
     return this.snapshot;
   }
 
-  private async pollUntilDone(settings: StoredRemoteSettings, originalConfig: MixProjectConfig): Promise<void> {
+  private async pollUntilDone(
+    settings: StoredRemoteSettings,
+    originalConfig: MixProjectConfig,
+    monitor?: WorkflowMonitorClient
+  ): Promise<void> {
     while (!this.stopped && this.currentJobId) {
       await delay(1200);
       const response = await this.requestJson<{ ok: boolean; snapshot: BatchJobSnapshot }>(
@@ -174,6 +187,13 @@ export class RemoteMixClient extends EventEmitter {
             message: completionError,
             finishedAt: new Date().toISOString()
           });
+          await monitor?.update({
+            stage: "failed",
+            status: "failed",
+            error: completionError,
+            progress: { message: completionError },
+            finishedAt: new Date().toISOString()
+          });
           return;
         }
         this.emitSnapshot({
@@ -182,12 +202,35 @@ export class RemoteMixClient extends EventEmitter {
           message: "服务器混剪已完成，正在下载成片到本地..."
         });
         try {
-          await this.downloadOutputs(settings, originalConfig, response.snapshot);
+          await this.downloadOutputs(settings, originalConfig, response.snapshot, monitor);
+          const cloudPending = originalConfig.exportTarget === "cloud" || originalConfig.exportTarget === "both";
+          await monitor?.update({
+            stage: cloudPending ? "cloud_upload" : "completed",
+            status: cloudPending ? "active" : response.snapshot.failed > 0 ? "partial" : "success",
+            progress: {
+              current: cloudPending ? 0 : response.snapshot.total,
+              total: cloudPending ? response.snapshot.completed : response.snapshot.total,
+              percent: cloudPending ? 0 : 100,
+              unit: "videos",
+              message: cloudPending ? "成片已下载，等待上传云管家" : "成片已下载到本地，任务完成"
+            },
+            totalVideos: response.snapshot.total,
+            succeededVideos: response.snapshot.completed,
+            failedVideos: response.snapshot.failed,
+            finishedAt: cloudPending ? undefined : response.snapshot.finishedAt
+          });
         } catch (error) {
           this.emitSnapshot({
             ...response.snapshot,
             status: "failed",
             message: `服务器成片下载失败：${toErrorMessage(error)}`,
+            finishedAt: new Date().toISOString()
+          });
+          await monitor?.update({
+            stage: "failed",
+            status: "failed",
+            error: `服务器成片下载失败：${toErrorMessage(error)}`,
+            progress: { message: `服务器成片下载失败：${toErrorMessage(error)}` },
             finishedAt: new Date().toISOString()
           });
         }
@@ -203,7 +246,8 @@ export class RemoteMixClient extends EventEmitter {
     workspaceRoot: string,
     projectId: string,
     config: MixProjectConfig,
-    useLegacyAudioCompatibility: boolean
+    useLegacyAudioCompatibility: boolean,
+    monitor?: WorkflowMonitorClient
   ): Promise<MixProjectConfig> {
     const assetMap = new Map<string, string>();
     const uploadAsset = async (asset: AssetInfo, folder: string): Promise<AssetInfo> => {
@@ -217,7 +261,13 @@ export class RemoteMixClient extends EventEmitter {
       const remoteRelativePath = path.posix.join("projects", projectId, folder, remoteFileName(asset.path));
       const remoteAbsolutePath = path.posix.join(workspaceRoot, remoteRelativePath);
       this.emitSnapshot({ ...this.snapshot, status: "running", message: `正在上传服务器素材：${asset.name}` });
-      await uploadFile(settings, `/api/files/upload?path=${encodeURIComponent(remoteRelativePath)}`, asset.path);
+      await uploadFile(settings, `/api/files/upload?path=${encodeURIComponent(remoteRelativePath)}`, asset.path, (current, total) => {
+        void monitor?.update({
+          stage: "asset_transfer",
+          status: "active",
+          progress: { current, total, unit: "bytes", message: `正在传输素材：${asset.name}` }
+        }, true);
+      });
       assetMap.set(asset.path, remoteAbsolutePath);
       return toRemoteAsset(asset, remoteAbsolutePath, useLegacyAudioCompatibility);
     };
@@ -254,7 +304,8 @@ export class RemoteMixClient extends EventEmitter {
   private async downloadOutputs(
     settings: StoredRemoteSettings,
     originalConfig: MixProjectConfig,
-    completedSnapshot: BatchJobSnapshot
+    completedSnapshot: BatchJobSnapshot,
+    monitor?: WorkflowMonitorClient
   ): Promise<void> {
     if (!this.currentJobId) {
       return;
@@ -265,9 +316,20 @@ export class RemoteMixClient extends EventEmitter {
     }
     const localVideosDir = path.join(originalConfig.outputDir, "videos");
     await fs.mkdir(localVideosDir, { recursive: true });
-    for (const file of response.files) {
+    for (const [index, file] of response.files.entries()) {
       this.emitSnapshot({ ...this.snapshot, message: `正在下载服务器成片：${file.name}` });
-      await downloadFile(settings, `/api/jobs/${encodeURIComponent(this.currentJobId)}/outputs/${encodeURIComponent(file.name)}`, path.join(localVideosDir, file.name));
+      await downloadFile(
+        settings,
+        `/api/jobs/${encodeURIComponent(this.currentJobId)}/outputs/${encodeURIComponent(file.name)}`,
+        path.join(localVideosDir, file.name),
+        (current, total) => {
+          void monitor?.update({
+            stage: "output_download",
+            status: "active",
+            progress: { current, total, unit: "bytes", message: `正在下载成片 ${index + 1}/${response.files.length}：${file.name}` }
+          }, true);
+        }
+      );
     }
     this.emitSnapshot({
       ...completedSnapshot,
@@ -382,12 +444,22 @@ function emptySnapshot(): BatchJobSnapshot {
   };
 }
 
-async function uploadFile(settings: StoredRemoteSettings, endpoint: string, filePath: string): Promise<void> {
+async function uploadFile(
+  settings: StoredRemoteSettings,
+  endpoint: string,
+  filePath: string,
+  onProgress?: (current: number, total: number) => void
+): Promise<void> {
   const stat = await fs.stat(filePath);
-  await streamRequest(settings, "POST", endpoint, createReadStream(filePath), stat.size);
+  await streamRequest(settings, "POST", endpoint, createReadStream(filePath), stat.size, onProgress);
 }
 
-async function downloadFile(settings: StoredRemoteSettings, endpoint: string, targetPath: string): Promise<void> {
+async function downloadFile(
+  settings: StoredRemoteSettings,
+  endpoint: string,
+  targetPath: string,
+  onProgress?: (current: number, total: number) => void
+): Promise<void> {
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
   await new Promise<void>((resolve, reject) => {
     const url = new URL(`${settings.serverUrl}${endpoint}`);
@@ -403,6 +475,12 @@ async function downloadFile(settings: StoredRemoteSettings, endpoint: string, ta
           reject(new Error(`下载服务器成片失败：HTTP ${response.statusCode ?? 0}`));
           return;
         }
+        const total = Number(response.headers["content-length"] ?? "0");
+        let current = 0;
+        response.on("data", (chunk: Buffer) => {
+          current += chunk.length;
+          onProgress?.(current, total);
+        });
         const output = createWriteStream(targetPath);
         response.pipe(output);
         output.on("finish", () => output.close(() => resolve()));
@@ -419,7 +497,8 @@ async function streamRequest(
   method: "POST",
   endpoint: string,
   stream: NodeJS.ReadableStream,
-  contentLength: number
+  contentLength: number,
+  onProgress?: (current: number, total: number) => void
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const url = new URL(`${settings.serverUrl}${endpoint}`);
@@ -447,6 +526,11 @@ async function streamRequest(
     );
     request.on("error", reject);
     stream.on("error", (error) => request.destroy(error));
+    let current = 0;
+    stream.on("data", (chunk: Buffer | string) => {
+      current += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      onProgress?.(current, contentLength);
+    });
     stream.pipe(request);
   });
 }

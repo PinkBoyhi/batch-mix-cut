@@ -39,6 +39,7 @@ import type {
   CloudVideoListQuery,
   CloudVideoRotation,
   CloudVideoType,
+  CloudUploadProgress,
   ExportTarget,
   ExportMode,
   JobStatus,
@@ -300,6 +301,22 @@ function TaskWorkspace({
     return api.onJobUpdate((update) => {
       if (update.taskId === taskId) {
         setJob(update.snapshot);
+      }
+    });
+  }, [api, taskId]);
+
+  useEffect(() => {
+    if (!api) return;
+    return api.onCloudProgress((update: CloudUploadProgress) => {
+      if (update.taskId !== taskId) return;
+      setCloudStatus(update.message);
+      if (update.videos) {
+        setCloudImportResults(update.videos.map((video) => ({
+          videoId: video.videoId,
+          videoName: video.videoName,
+          status: video.status === "success" ? 10 : video.status === "failed" ? 20 : video.status === "processing" ? 3 : 0,
+          msg: video.message
+        })));
       }
     });
   }, [api, taskId]);
@@ -1125,7 +1142,7 @@ function TaskWorkspace({
     setCloudBusy(true);
     setCloudStatus(automatic ? "混剪已完成，正在上传本地成片到云管家..." : "正在上传本地成片到云管家...");
     try {
-      const result = await api.uploadCloudLocalVideos(videos);
+      const result = await api.uploadCloudLocalVideos(taskId, videos);
       setCloudImportRequestId(result.importJob.requestId);
       setCloudImportRows((currentRows) =>
         currentRows.map((row) => {
@@ -1235,7 +1252,7 @@ function TaskWorkspace({
     setCloudBusy(true);
     setCloudStatus(undefined);
     try {
-      const result = await api.importCloudVideos(videos);
+      const result = await api.importCloudVideos(taskId, videos);
       setCloudImportRequestId(result.requestId);
       setCloudStatus(
         formatCloudImportSubmissionStatus(undefined, undefined, result)

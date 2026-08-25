@@ -10,8 +10,29 @@ MIX_SERVER_HOST=0.0.0.0 \
 MIX_SERVER_PORT=8787 \
 MIX_SERVER_TOKEN="替换为一段随机长密码" \
 MIX_SERVER_MAX_CONCURRENT_JOBS=2 \
+FEISHU_BOT_WEBHOOK="https://open.feishu.cn/open-apis/bot/v2/hook/替换为机器人地址" \
+FEISHU_BOT_SECRET="机器人开启签名校验时填写，否则留空" \
+MIX_DASHBOARD_URL="http://10.0.0.133:8787" \
 pnpm server -- --workspace /home/fczj/mix-work
 ```
+
+## 进度看板与飞书提醒
+
+服务器启动后，在公司内网的手机或电脑浏览器打开：
+
+```text
+http://10.0.0.133:8787/dashboard
+```
+
+首次进入时输入同一个 `MIX_SERVER_TOKEN`。看板会显示素材传输、排队、混剪、成片下载、云管家上传和云端处理结果。任务历史保存在服务器工作目录的 `dashboard/workflows.json`，默认保留 30 天、最多 500 条。
+
+飞书提醒配置：
+
+- `FEISHU_BOT_WEBHOOK`：目标飞书群的自定义机器人 Webhook；不填则只使用看板。
+- `FEISHU_BOT_SECRET`：飞书机器人开启“签名校验”后填写，没有开启时可以留空。
+- `MIX_DASHBOARD_URL`：手机能访问的服务器地址，飞书消息会附带看板链接。
+
+飞书通知发送失败会自动重试 3 次，不会影响混剪或云管家上传结果。
 
 ## 升级到 0.1.28 及以上
 
@@ -83,6 +104,12 @@ curl -X POST "http://10.0.0.133:8787/api/jobs/from-project" \
 
 ```bash
 curl -H "x-mix-token: <TOKEN>" http://10.0.0.133:8787/api/jobs/<JOB_ID>
+```
+
+查询看板任务：
+
+```bash
+curl -H "x-mix-token: <TOKEN>" "http://10.0.0.133:8787/api/workflows?limit=200"
 ```
 
 查询输出视频：
