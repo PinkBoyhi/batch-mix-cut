@@ -14,24 +14,28 @@ export function createCombinations(
     return [];
   }
 
+  const sortedSlots = [...slots].sort((left, right) => left.sortOrder - right.sortOrder);
   const limit = Math.max(0, Math.floor(maxCombinations));
-  const total = slots.reduce((product, slot) => product * slot.assets.length, 1);
+  const total = sortedSlots.reduce((product, slot) => product * slot.assets.length, 1);
   const count = Math.min(total, limit);
   const combinations: MixCombination[] = [];
 
   for (let index = 0; index < count; index += 1) {
     const slotAssets: Record<string, AssetInfo> = {};
-    let cursor = index;
+    let lowerSlotCombinations = 1;
 
-    // 让开头片段优先轮换，避免后续片段素材较多时连续出现同一个开头。
-    for (const slot of slots) {
-      const assetIndex = cursor % slot.assets.length;
-      cursor = Math.floor(cursor / slot.assets.length);
+    for (const [slotIndex, slot] of sortedSlots.entries()) {
+      const baseAssetIndex = Math.floor(index / lowerSlotCombinations) % slot.assets.length;
+      // A、B 保持成对交叉；从 C 开始按前面段落的组合序号错位轮换。
+      // 这样截取前 N 条时，后续段落也会尽早分散，且完整生成时仍没有重复组合。
+      const lowerCombinationIndex = index % lowerSlotCombinations;
+      const assetIndex = slotIndex >= 2 ? (baseAssetIndex + lowerCombinationIndex) % slot.assets.length : baseAssetIndex;
       slotAssets[slot.name] = slot.assets[assetIndex];
+      lowerSlotCombinations *= slot.assets.length;
     }
 
     const id = `mix_${String(index + 1).padStart(4, "0")}`;
-    const sequence = slots
+    const sequence = sortedSlots
       .map((slot) => safeName(path.parse(slotAssets[slot.name].name).name))
       .join("__");
     const customBase = buildOutputBaseName(outputNamePattern, index);
