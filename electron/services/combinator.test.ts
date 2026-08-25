@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AssetInfo, BgmTrack, SegmentSlot } from "../../src/shared/types.js";
 import { buildOutputBaseName, createCombinations } from "./combinator.js";
@@ -65,8 +66,8 @@ describe("createCombinations", () => {
     const combinations = createCombinations(slots, [], "/tmp/out", 2, "成品 视频");
 
     expect(combinations.map((item) => item.targetVideoPath)).toEqual([
-      "/tmp/out/videos/成品_视频_001.mp4",
-      "/tmp/out/videos/成品_视频_002.mp4"
+      path.join("/tmp/out", "videos", "成品_视频_001.mp4"),
+      path.join("/tmp/out", "videos", "成品_视频_002.mp4")
     ]);
     expect(buildOutputBaseName("", 0)).toBe("");
   });
