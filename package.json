@@ -17,6 +17,7 @@
     "publish:win": "pnpm build && electron-builder --win --x64 --publish always",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
+    "smoke:workflow:local": "node scripts/check-remote-server.mjs --local",
     "verify:release": "pnpm typecheck && pnpm test && pnpm build && node scripts/check-remote-server.mjs --e2e"
   },
   "dependencies": {
