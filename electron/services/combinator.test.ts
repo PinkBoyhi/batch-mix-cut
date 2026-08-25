@@ -4,7 +4,7 @@ import type { AssetInfo, BgmTrack, SegmentSlot } from "../../src/shared/types.js
 import { buildOutputBaseName, createCombinations } from "./combinator.js";
 
 describe("createCombinations", () => {
-  it("creates cartesian products and rotates bgm by index", () => {
+  it("creates cartesian products while rotating the opening segment first", () => {
     const slots: SegmentSlot[] = [
       {
         name: "A",
@@ -22,9 +22,30 @@ describe("createCombinations", () => {
     const combinations = createCombinations(slots, bgmAssets, "/tmp/out");
 
     expect(combinations).toHaveLength(4);
-    expect(combinations.map((item) => item.slotAssets.A.name)).toEqual(["a1.mp4", "a1.mp4", "a2.mp4", "a2.mp4"]);
-    expect(combinations.map((item) => item.slotAssets.B.name)).toEqual(["b1.mp4", "b2.mp4", "b1.mp4", "b2.mp4"]);
+    expect(combinations.map((item) => item.slotAssets.A.name)).toEqual(["a1.mp4", "a2.mp4", "a1.mp4", "a2.mp4"]);
+    expect(combinations.map((item) => item.slotAssets.B.name)).toEqual(["b1.mp4", "b1.mp4", "b2.mp4", "b2.mp4"]);
     expect(combinations.map((item) => item.bgm?.name)).toEqual(["m1.mp3", "m2.mp3", "m1.mp3", "m2.mp3"]);
+  });
+
+  it("alternates two opening assets across a 40-video batch even when later slots have many assets", () => {
+    const slots: SegmentSlot[] = [
+      { name: "A", sortOrder: 0, assets: [video("opening-1.mp4"), video("opening-2.mp4")] },
+      {
+        name: "B",
+        sortOrder: 1,
+        assets: Array.from({ length: 20 }, (_, index) => video(`body-${index + 1}.mp4`))
+      }
+    ];
+
+    const combinations = createCombinations(slots, [], "/tmp/out", 40);
+
+    expect(combinations).toHaveLength(40);
+    expect(combinations.map((item) => item.slotAssets.A.name)).toEqual(
+      Array.from({ length: 40 }, (_, index) => `opening-${(index % 2) + 1}.mp4`)
+    );
+    expect(combinations.map((item) => item.slotAssets.B.name)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `body-${index + 1}.mp4`).flatMap((name) => [name, name])
+    );
   });
 
   it("selects one candidate from every bgm track", () => {
@@ -54,9 +75,9 @@ describe("createCombinations", () => {
 
     expect(combinations).toHaveLength(5);
     expect(combinations.at(-1)?.slotAssets).toMatchObject({
-      A: expect.objectContaining({ name: "a1.mp4" }),
+      A: expect.objectContaining({ name: "a2.mp4" }),
       B: expect.objectContaining({ name: "b2.mp4" }),
-      C: expect.objectContaining({ name: "c2.mp4" })
+      C: expect.objectContaining({ name: "c1.mp4" })
     });
   });
 

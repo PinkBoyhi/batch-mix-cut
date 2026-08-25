@@ -23,8 +23,8 @@ export function createCombinations(
     const slotAssets: Record<string, AssetInfo> = {};
     let cursor = index;
 
-    for (let slotIndex = slots.length - 1; slotIndex >= 0; slotIndex -= 1) {
-      const slot = slots[slotIndex];
+    // 让开头片段优先轮换，避免后续片段素材较多时连续出现同一个开头。
+    for (const slot of slots) {
       const assetIndex = cursor % slot.assets.length;
       cursor = Math.floor(cursor / slot.assets.length);
       slotAssets[slot.name] = slot.assets[assetIndex];
