@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
+import { CLOUD_IMPORT_BATCH_SIZE } from "../../src/shared/cloudBatches.js";
 import type {
   CloudAccount,
   CloudImportJob,
@@ -146,7 +147,7 @@ export class YunguanjiaClient {
     if (videos.length === 0) {
       throw new Error("请选择要导入云管家的视频");
     }
-    if (videos.length > 50) {
+    if (videos.length > CLOUD_IMPORT_BATCH_SIZE) {
       throw new Error("云管家一次最多导入 50 个视频");
     }
     for (const [index, video] of videos.entries()) {
@@ -194,7 +195,7 @@ export class YunguanjiaClient {
     if (videos.length === 0) {
       throw new Error("没有待上传的本地成片");
     }
-    if (videos.length > 50) {
+    if (videos.length > CLOUD_IMPORT_BATCH_SIZE) {
       throw new Error("云管家一次最多导入 50 个视频");
     }
 

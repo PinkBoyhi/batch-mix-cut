@@ -57,6 +57,7 @@ import {
   parseCloudLabelIds,
   reconcileCloudLabelIds
 } from "./shared/cloudLabels";
+import { splitCloudBatches } from "./shared/cloudBatches";
 
 const emptyJob: BatchJobSnapshot = {
   id: "idle",
@@ -103,6 +104,14 @@ interface CloudImportRow {
   videoName: string;
   url: string;
   thirdId: string;
+}
+
+interface CloudBatchProgress {
+  currentBatch: number;
+  totalBatches: number;
+  totalVideos: number;
+  startIndex: number;
+  endIndex: number;
 }
 
 interface VideoPreviewState {
@@ -283,7 +292,9 @@ function TaskWorkspace({
     videoRight: 0
   });
   const [cloudImportRequestId, setCloudImportRequestId] = useState("");
+  const [cloudImportRequestIds, setCloudImportRequestIds] = useState<string[]>([]);
   const [cloudImportResults, setCloudImportResults] = useState<CloudImportResult[]>([]);
+  const [cloudBatchProgress, setCloudBatchProgress] = useState<CloudBatchProgress | undefined>();
   const [cloudPublishProfiles, setCloudPublishProfiles] = useState<CloudPublishProfile[]>([]);
   const [selectedCloudPublishProfileId, setSelectedCloudPublishProfileId] = useState("");
   const [cloudPublishProfileName, setCloudPublishProfileName] = useState("");
@@ -309,7 +320,7 @@ function TaskWorkspace({
     if (!api) return;
     return api.onCloudProgress((update: CloudUploadProgress) => {
       if (update.taskId !== taskId) return;
-      setCloudStatus(update.message);
+      setCloudStatus(formatCloudBatchProgress(update.message, cloudBatchProgress));
       if (update.videos) {
         setCloudImportResults(update.videos.map((video) => ({
           videoId: video.videoId,
@@ -319,7 +330,7 @@ function TaskWorkspace({
         })));
       }
     });
-  }, [api, taskId]);
+  }, [api, cloudBatchProgress, taskId]);
 
   useEffect(() => {
     onTaskStatusChange(taskId, job.status);
@@ -411,11 +422,13 @@ function TaskWorkspace({
     }
     if (cloudSettings.hasUploadToken) {
       setAutoCloudImportJobId(job.id);
+      beginCloudSubmission();
       void uploadCloudLocalVideos(rows, true);
       return;
     }
     if (cloudPublicUrlPrefix.trim() && rows.length > 0 && rows.every((row) => row.url.trim())) {
       setAutoCloudImportJobId(job.id);
+      beginCloudSubmission();
       void submitCloudImport(rows, true);
       return;
     }
@@ -654,7 +667,9 @@ function TaskWorkspace({
     try {
       setCloudImportRows([]);
       setCloudImportRequestId("");
+      setCloudImportRequestIds([]);
       setCloudImportResults([]);
+      setCloudBatchProgress(undefined);
       setAutoCloudImportJobId(undefined);
       setActiveMixExecutionTarget(mixExecutionTarget);
       setJob(mixExecutionTarget === "server" ? await api.startRemoteJob(taskId, config) : await api.startJob(taskId, config));
@@ -987,6 +1002,18 @@ function TaskWorkspace({
     }));
   }
 
+  function beginCloudSubmission() {
+    setCloudImportRequestId("");
+    setCloudImportRequestIds([]);
+    setCloudImportResults([]);
+    setCloudBatchProgress(undefined);
+  }
+
+  function rememberCloudImportRequest(requestId: string) {
+    setCloudImportRequestId(requestId);
+    setCloudImportRequestIds((current) => (current.includes(requestId) ? current : [...current, requestId]));
+  }
+
   async function searchCloudVideos(nextQuery: CloudVideoListQuery = cloudQuery) {
     if (!api) return;
     if (!cloudUserReady) {
@@ -1100,35 +1127,35 @@ function TaskWorkspace({
     setCloudStatus(`已加入 ${files.length} 个待上传视频`);
   }
 
-  async function uploadCloudLocalVideos(rows: CloudImportRow[], automatic: boolean) {
-    if (!api) return;
+  async function uploadCloudLocalVideos(rows: CloudImportRow[], automatic: boolean): Promise<boolean> {
+    if (!api) return false;
     const twoLevelTypeId = Number(cloudImportMeta.twoLevelTypeId);
     if (!Number.isFinite(twoLevelTypeId) || twoLevelTypeId <= 0) {
       setCloudStatus("请先选择云管家二级分类");
-      return;
+      return false;
     }
     if (!cloudImportMeta.labelIds.trim()) {
       setCloudStatus("请先选择云管家标签，当前接口要求标签必填");
-      return;
+      return false;
     }
     if (!(await refreshCloudLabelsBeforePublish())) {
-      return;
+      return false;
     }
     if (!cloudUserReady) {
       setCloudStatus("请先验证手机号匹配云管家身份");
-      return;
+      return false;
     }
     if (rows.length === 0) {
       setCloudStatus("没有待上传的本地成片");
-      return;
+      return false;
     }
     if (!cloudSyncEnabled) {
       setCloudStatus("请先打开“是否同步到云端”");
-      return;
+      return false;
     }
     if (!cloudSettings.hasUploadToken) {
       setCloudStatus("发布需要云管家上传授权；当前未获取授权，不能把本地 mp4 直传云管家。可以先自动获取上传授权，或填写每条公网 URL 后用“公网 URL 导入”。");
-      return;
+      return false;
     }
     const videos: CloudLocalUploadVideo[] = rows.map((row, index) => ({
       localPath: row.localPath,
@@ -1139,29 +1166,63 @@ function TaskWorkspace({
       videoRight: cloudImportMeta.videoRight,
       rotation: cloudRotation
     }));
+    const batches = splitCloudBatches(videos);
+    const uploaded: Array<{ localPath: string; videoName: string; url: string }> = [];
+    const skipped: Array<{ localPath: string; videoName: string; reason: string }> = [];
+    const importJobs: CloudImportJob[] = [];
+    let labelIds = cloudImportMeta.labelIds;
+    let completedBatches = 0;
+    let completedVideos = 0;
     setCloudBusy(true);
-    setCloudStatus(automatic ? "混剪已完成，正在上传本地成片到云管家..." : "正在上传本地成片到云管家...");
     try {
-      const result = await api.uploadCloudLocalVideos(taskId, videos);
-      setCloudImportRequestId(result.importJob.requestId);
-      setCloudImportRows((currentRows) =>
-        currentRows.map((row) => {
-          const uploaded = result.uploaded.find((item) => item.localPath === row.localPath);
-          return uploaded ? { ...row, url: uploaded.url } : row;
-        })
-      );
-      setCloudStatus(
-        formatCloudImportSubmissionStatus(result.uploaded.length, result.skipped, result.importJob)
-      );
-      applyRejectedCloudLabelIds(result.importJob);
+      for (const [batchIndex, sourceBatch] of batches.entries()) {
+        const batchProgress = createCloudBatchProgress(batchIndex, batches.length, videos.length, completedVideos, sourceBatch.length);
+        setCloudBatchProgress(batchProgress);
+        setCloudStatus(formatCloudBatchStartStatus(batchProgress, automatic ? "混剪已完成，正在上传本地成片" : "正在上传本地成片"));
+
+        const result = await api.uploadCloudLocalVideos(
+          taskId,
+          sourceBatch.map((video) => ({ ...video, labelIds }))
+        );
+        completedBatches = batchIndex + 1;
+        completedVideos += sourceBatch.length;
+        uploaded.push(...result.uploaded);
+        skipped.push(...(result.skipped ?? []));
+        importJobs.push(result.importJob);
+        rememberCloudImportRequest(result.importJob.requestId);
+        setCloudImportRows((currentRows) =>
+          currentRows.map((row) => {
+            const uploadedItem = result.uploaded.find((item) => item.localPath === row.localPath);
+            return uploadedItem ? { ...row, url: uploadedItem.url } : row;
+          })
+        );
+
+        const rejectedLabelIds = findRejectedCloudLabelIds(result.importJob.errorList);
+        if (rejectedLabelIds.length > 0) {
+          labelIds = parseCloudLabelIds(labelIds)
+            .filter((labelId) => !rejectedLabelIds.includes(labelId))
+            .join(",");
+          applyRejectedCloudLabelIds(result.importJob);
+          setCloudStatus(
+            `${formatCloudBatchSubmissionStatus(videos.length, batches.length, uploaded.length, skipped, importJobs)}；第 ${batchIndex + 1} 批的标签已失效，剩余 ${videos.length - batchProgress.endIndex} 条未提交。已停止后续批次，请确认标签后点击发布，已上传视频会复用地址。`
+          );
+          return false;
+        }
+      }
+      setCloudStatus(formatCloudBatchSubmissionStatus(videos.length, batches.length, uploaded.length, skipped, importJobs));
+      return true;
     } catch (err) {
-      setCloudStatus(toMessage(err));
+      const failedBatch = Math.min(completedBatches + 1, batches.length);
+      setCloudStatus(`第 ${failedBatch}/${batches.length} 批上传失败；前面已完成 ${completedBatches} 批。${toMessage(err)}。已上传的视频会保留，重新发布时不会重复上传。`);
+      return false;
     } finally {
       setCloudBusy(false);
+      setCloudBatchProgress(undefined);
     }
   }
 
   async function importCloudVideos() {
+    beginCloudSubmission();
     await submitCloudImport(cloudImportRows, false);
   }
 
@@ -1171,16 +1232,23 @@ function TaskWorkspace({
       await openLocalExports();
       return;
     }
-    const hasAllPublicUrls = cloudImportRows.length > 0 && cloudImportRows.every((row) => row.url.trim());
-    if (hasAllPublicUrls) {
-      await submitCloudImport(cloudImportRows, false);
-      return;
-    }
-    if (!cloudSettings.hasUploadToken) {
+    const publicUrlRows = cloudImportRows.filter((row) => row.url.trim());
+    const localUploadRows = cloudImportRows.filter((row) => !row.url.trim());
+    if (localUploadRows.length > 0 && !cloudSettings.hasUploadToken) {
       setCloudStatus("发布失败：缺少云管家上传授权，无法直传本地 mp4。请在云管家登录里点击自动获取上传授权，或给每条视频填公网 URL 后导入。");
       return;
     }
-    await uploadCloudLocalVideos(cloudImportRows, false);
+    beginCloudSubmission();
+    if (publicUrlRows.length > 0 && !(await submitCloudImport(publicUrlRows, false))) {
+      return;
+    }
+    if (localUploadRows.length > 0 && !(await uploadCloudLocalVideos(localUploadRows, false))) {
+      return;
+    }
+    if (publicUrlRows.length === 0 && localUploadRows.length === 0) {
+      setCloudStatus("没有待发布的视频");
+      return;
+    }
     if (keepConfigForNext) {
       setCloudStatus((current) => `${current ?? "发布已提交"}；可继续选择下一批视频。`);
     }
@@ -1212,32 +1280,32 @@ function TaskWorkspace({
     setVideoPreviewError(undefined);
   }
 
-  async function submitCloudImport(rows: CloudImportRow[], automatic: boolean) {
-    if (!api) return;
+  async function submitCloudImport(rows: CloudImportRow[], automatic: boolean): Promise<boolean> {
+    if (!api) return false;
     const twoLevelTypeId = Number(cloudImportMeta.twoLevelTypeId);
     if (!Number.isFinite(twoLevelTypeId) || twoLevelTypeId <= 0) {
       setCloudStatus("请先选择云管家二级分类");
-      return;
+      return false;
     }
     if (!cloudImportMeta.labelIds.trim()) {
       setCloudStatus("请先选择云管家标签，当前接口要求标签必填");
-      return;
+      return false;
     }
     if (!(await refreshCloudLabelsBeforePublish())) {
-      return;
+      return false;
     }
     if (!cloudUserReady) {
       setCloudStatus("请先验证手机号匹配云管家身份");
-      return;
+      return false;
     }
     if (rows.length === 0) {
       setCloudStatus("没有待导入的视频");
-      return;
+      return false;
     }
     const missingUrl = rows.findIndex((row) => !row.url.trim());
     if (missingUrl >= 0) {
       setCloudStatus(`第 ${missingUrl + 1} 个视频缺少公网 URL，无法${automatic ? "自动" : ""}导入云管家`);
-      return;
+      return false;
     }
     const videos: CloudImportVideo[] = rows.map((row, index) => ({
       localPath: row.localPath,
@@ -1249,30 +1317,66 @@ function TaskWorkspace({
       url: row.url,
       thirdId: row.thirdId || undefined
     }));
+    const batches = splitCloudBatches(videos);
+    const importJobs: CloudImportJob[] = [];
+    let labelIds = cloudImportMeta.labelIds;
+    let completedBatches = 0;
+    let completedVideos = 0;
     setCloudBusy(true);
-    setCloudStatus(undefined);
     try {
-      const result = await api.importCloudVideos(taskId, videos);
-      setCloudImportRequestId(result.requestId);
-      setCloudStatus(
-        formatCloudImportSubmissionStatus(undefined, undefined, result)
-      );
-      applyRejectedCloudLabelIds(result);
+      for (const [batchIndex, sourceBatch] of batches.entries()) {
+        const batchProgress = createCloudBatchProgress(batchIndex, batches.length, videos.length, completedVideos, sourceBatch.length);
+        setCloudBatchProgress(batchProgress);
+        setCloudStatus(formatCloudBatchStartStatus(batchProgress, automatic ? "混剪已完成，正在提交公网视频" : "正在提交公网视频"));
+
+        const result = await api.importCloudVideos(
+          taskId,
+          sourceBatch.map((video) => ({ ...video, labelIds }))
+        );
+        completedBatches = batchIndex + 1;
+        completedVideos += sourceBatch.length;
+        importJobs.push(result);
+        rememberCloudImportRequest(result.requestId);
+
+        const rejectedLabelIds = findRejectedCloudLabelIds(result.errorList);
+        if (rejectedLabelIds.length > 0) {
+          labelIds = parseCloudLabelIds(labelIds)
+            .filter((labelId) => !rejectedLabelIds.includes(labelId))
+            .join(",");
+          applyRejectedCloudLabelIds(result);
+          setCloudStatus(
+            `${formatCloudBatchSubmissionStatus(videos.length, batches.length, undefined, undefined, importJobs)}；第 ${batchIndex + 1} 批的标签已失效，剩余 ${videos.length - batchProgress.endIndex} 条未提交。已停止后续批次，请确认标签后点击发布。`
+          );
+          return false;
+        }
+      }
+      setCloudStatus(formatCloudBatchSubmissionStatus(videos.length, batches.length, undefined, undefined, importJobs));
+      return true;
     } catch (err) {
-      setCloudStatus(toMessage(err));
+      const failedBatch = Math.min(completedBatches + 1, batches.length);
+      setCloudStatus(`第 ${failedBatch}/${batches.length} 批提交失败；前面已完成 ${completedBatches} 批。${toMessage(err)}。`);
+      return false;
     } finally {
       setCloudBusy(false);
+      setCloudBatchProgress(undefined);
     }
   }
 
   async function queryCloudImportResult() {
-    if (!api || !cloudImportRequestId) return;
+    if (!api) return;
+    const requestIds = cloudImportRequestIds.length > 0
+      ? cloudImportRequestIds
+      : cloudImportRequestId.trim()
+        ? [cloudImportRequestId.trim()]
+        : [];
+    if (requestIds.length === 0) return;
     setCloudBusy(true);
     setCloudStatus(undefined);
     try {
-      const result = await api.queryCloudImportResult(cloudImportRequestId, 1, 50);
-      setCloudImportResults(result.list);
-      setCloudStatus(`已查询 ${result.list.length} 条导入结果`);
+      const results = await Promise.all(requestIds.map((requestId) => api.queryCloudImportResult(requestId, 1, 50)));
+      const importedVideos = results.flatMap((result) => result.list);
+      setCloudImportResults(importedVideos);
+      setCloudStatus(`已查询 ${requestIds.length} 批，共 ${importedVideos.length} 条导入结果`);
     } catch (err) {
       setCloudStatus(toMessage(err));
     } finally {
@@ -2223,14 +2327,17 @@ function TaskWorkspace({
                     <input
                       className="request-input"
                       value={cloudImportRequestId}
-                      placeholder="导入 requestId"
-                      onChange={(event) => setCloudImportRequestId(event.target.value)}
+                      placeholder="最后一批 requestId（多批会自动汇总）"
+                      onChange={(event) => {
+                        setCloudImportRequestId(event.target.value);
+                        setCloudImportRequestIds([]);
+                      }}
                     />
                     <button
                       className="secondary-inline"
                       type="button"
                       onClick={queryCloudImportResult}
-                      disabled={cloudBusy || !api || !cloudImportRequestId}
+                      disabled={cloudBusy || !api || (cloudImportRequestIds.length === 0 && !cloudImportRequestId.trim())}
                     >
                       查询结果
                     </button>
@@ -3068,6 +3175,54 @@ function buildCloudImportRows(combinations: MixCombination[], publicUrlPrefix: s
 
 function formatSkippedUploadSummary(skipped?: Array<{ reason: string }>): string {
   return skipped?.length ? `；已跳过 ${skipped.length} 个未生成成片` : "";
+}
+
+function createCloudBatchProgress(
+  batchIndex: number,
+  totalBatches: number,
+  totalVideos: number,
+  completedVideos: number,
+  batchSize: number
+): CloudBatchProgress {
+  return {
+    currentBatch: batchIndex + 1,
+    totalBatches,
+    totalVideos,
+    startIndex: completedVideos + 1,
+    endIndex: completedVideos + batchSize
+  };
+}
+
+function formatCloudBatchPrefix(progress: CloudBatchProgress): string {
+  return `第 ${progress.currentBatch}/${progress.totalBatches} 批（${progress.startIndex}-${progress.endIndex}/${progress.totalVideos}）`;
+}
+
+function formatCloudBatchStartStatus(progress: CloudBatchProgress, action: string): string {
+  return `${formatCloudBatchPrefix(progress)}：${action}...`;
+}
+
+function formatCloudBatchProgress(message: string, progress: CloudBatchProgress | undefined): string {
+  if (!progress || message.startsWith("第 ")) {
+    return message;
+  }
+  return `${formatCloudBatchPrefix(progress)}：${message}`;
+}
+
+function formatCloudBatchSubmissionStatus(
+  totalVideos: number,
+  totalBatches: number,
+  uploadedCount: number | undefined,
+  skipped: Array<{ reason: string }> | undefined,
+  importJobs: CloudImportJob[]
+): string {
+  const errorList = importJobs.flatMap((job) => job.errorList);
+  const imported = uploadedCount === undefined
+    ? `已分 ${totalBatches} 批提交 ${totalVideos} 个视频到云管家`
+    : `已分 ${totalBatches} 批上传 ${uploadedCount} 个本地成片${formatSkippedUploadSummary(skipped)}，并提交云管家导入`;
+  const validationErrors = errorList.length > 0
+    ? `；云管家返回 ${errorList.length} 条校验错误：${formatImportErrors(errorList)}`
+    : "";
+  return `${imported}${validationErrors}；可点击“查询结果”汇总查看 ${importJobs.length} 批导入状态。`;
 }
 
 function formatCloudImportSubmissionStatus(
