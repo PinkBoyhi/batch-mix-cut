@@ -21,6 +21,9 @@ if (runRemoteWorkflow || !runLocalWorkflow) {
   if (Number(health.audioPipelineVersion ?? 0) < 2) {
     throw new Error("服务器混剪引擎版本过旧，未通过发布前检查");
   }
+  if (Number(health.combinationPipelineVersion ?? 0) < 2) {
+    throw new Error("服务器组合引擎版本过旧，无法保证开头素材轮换");
+  }
 
   const authorization = await requestJson(`${serverUrl}/api/auth/check`, { "x-mix-token": token });
   if (!authorization.ok) {
@@ -89,8 +92,9 @@ async function runRemoteMixSmokeTest({ serverUrl, token }) {
     await client.start(fixture.config);
     const snapshot = await completion;
     assertCompletedSnapshot(snapshot, "服务器完整混剪测试");
-    await assertWorkflowOutputs(fixture.config.outputDir, 4, "服务器回传成片");
-    console.log("服务器完整混剪测试通过：4 个组合已混剪、回传并校验音视频流");
+    const files = await assertWorkflowOutputs(fixture.config.outputDir, 4, "服务器回传成片");
+    assertOpeningRotation(files, "服务器回传成片");
+    console.log("服务器完整混剪测试通过：4 个组合已混剪、开头轮换、回传并校验音视频流");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -107,8 +111,9 @@ async function runLocalMixWorkflowSmokeTest() {
     await manager.start(fixture.config);
     const snapshot = await completion;
     assertCompletedSnapshot(snapshot, "本地完整混剪测试");
-    await assertWorkflowOutputs(fixture.config.outputDir, 4, "本地成片");
-    console.log("本地完整混剪测试通过：A=2、B=2、BGM轮换、声音和 MP4 输出均已校验");
+    const files = await assertWorkflowOutputs(fixture.config.outputDir, 4, "本地成片");
+    assertOpeningRotation(files, "本地成片");
+    console.log("本地完整混剪测试通过：A=2、B=2、开头轮换、BGM轮换、声音和 MP4 输出均已校验");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -161,7 +166,7 @@ async function createWorkflowFixture(rootDir, mode) {
       }
     ],
     maxCombinations: 4,
-    outputNamePattern: `${mode}_workflow`,
+    outputNamePattern: "",
     exportMode: "video",
     sourceVolume: 1,
     bgmVolume: 0.35,
@@ -242,6 +247,15 @@ async function assertWorkflowOutputs(outputDir, expectedCount, label) {
     await assertVisibleVideoFrame(filePath, label, file);
     await assertAudibleAudio(filePath, label, file);
   }));
+  return files;
+}
+
+function assertOpeningRotation(files, label) {
+  const openings = files.map((file) => file.split("__")[1] ?? "");
+  const expected = ["A-01", "A-02", "A-01", "A-02"];
+  if (openings.join(",") !== expected.join(",")) {
+    throw new Error(`${label}开头轮换错误：预期 ${expected.join("、")}，实际 ${openings.join("、")}`);
+  }
 }
 
 async function probeStreams(filePath) {

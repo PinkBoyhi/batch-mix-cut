@@ -64,7 +64,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 2 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 2, combinationPipelineVersion: 2 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {
@@ -83,6 +83,36 @@ describe("toRemoteAsset", () => {
 
       const client = new RemoteMixClient(() => tempDir);
       await expect(client.testConnection()).resolves.toMatchObject({ ok: true, hasToken: true });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a server that cannot guarantee opening clip rotation", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "remote-mix-client-"));
+    const server = http.createServer((request, response) => {
+      if (request.url === "/health") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 2, combinationPipelineVersion: 1 }));
+        return;
+      }
+      if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: false }));
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as AddressInfo).port;
+      await fs.writeFile(path.join(tempDir, "remote-mix-server.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${port}`, token: "test-token" }));
+
+      const client = new RemoteMixClient(() => tempDir);
+      await expect(client.testConnection()).resolves.toMatchObject({ ok: false, message: expect.stringContaining("开头素材轮换") });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
       await fs.rm(tempDir, { recursive: true, force: true });

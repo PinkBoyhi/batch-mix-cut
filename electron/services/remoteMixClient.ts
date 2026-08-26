@@ -19,6 +19,7 @@ import { WorkflowMonitorClient } from "./workflowMonitorClient.js";
 const CONFIG_FILE = "remote-mix-server.json";
 const DEFAULT_SERVER_URL = "http://10.0.0.133:8787";
 const MIN_SERVER_AUDIO_PIPELINE_VERSION = 2;
+const MIN_SERVER_COMBINATION_PIPELINE_VERSION = 2;
 
 interface StoredRemoteSettings extends RemoteMixSettings {}
 
@@ -26,6 +27,7 @@ interface RemoteHealth {
   ok: boolean;
   workspaceRoot: string;
   audioPipelineVersion?: number;
+  combinationPipelineVersion?: number;
 }
 
 interface RemoteJobResponse {
@@ -74,6 +76,14 @@ export class RemoteMixClient extends EventEmitter {
     if (activeSettings.token) {
       await this.requestJson<{ ok: boolean }>(activeSettings, "GET", "/api/auth/check");
     }
+    if (!supportsCombinationPipeline(health)) {
+      return {
+        serverUrl: activeSettings.serverUrl,
+        hasToken: Boolean(activeSettings.token),
+        ok: false,
+        message: "服务器混剪引擎较旧，无法保证开头素材轮换；请更新服务器后再开始混剪。"
+      };
+    }
     if (!supportsAudioPipeline(health)) {
       return {
         serverUrl: activeSettings.serverUrl,
@@ -101,6 +111,9 @@ export class RemoteMixClient extends EventEmitter {
     const health = await this.requestJson<RemoteHealth>(settings, "GET", "/health");
     if (!health.workspaceRoot) {
       throw new Error("服务器没有返回工作目录");
+    }
+    if (!supportsCombinationPipeline(health)) {
+      throw new Error("服务器混剪引擎较旧，无法保证开头素材轮换；请先更新服务器后再开始混剪。");
     }
 
     this.stopped = false;
@@ -405,6 +418,10 @@ function normalizeServerUrl(value: string): string {
 
 function supportsAudioPipeline(health: RemoteHealth): boolean {
   return (health.audioPipelineVersion ?? 0) >= MIN_SERVER_AUDIO_PIPELINE_VERSION;
+}
+
+function supportsCombinationPipeline(health: RemoteHealth): boolean {
+  return (health.combinationPipelineVersion ?? 0) >= MIN_SERVER_COMBINATION_PIPELINE_VERSION;
 }
 
 export function toRemoteAsset(asset: AssetInfo, remotePath: string, useLegacyAudioCompatibility: boolean): AssetInfo {
