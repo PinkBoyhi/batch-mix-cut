@@ -48,7 +48,7 @@ describe("createCombinations", () => {
     );
   });
 
-  it("spreads later segments through the first batch without repeating combinations", () => {
+  it("uses one stable cartesian-product order for every segment", () => {
     const slots: SegmentSlot[] = [
       { name: "A", sortOrder: 0, assets: [video("a1.mp4"), video("a2.mp4")] },
       { name: "B", sortOrder: 1, assets: [video("b1.mp4"), video("b2.mp4")] },
@@ -58,8 +58,26 @@ describe("createCombinations", () => {
     const firstBatch = createCombinations(slots, [], "/tmp/out", 4);
     const completeBatch = createCombinations(slots, [], "/tmp/out");
 
-    expect(firstBatch.map((item) => item.slotAssets.C.name)).toEqual(["c1.mp4", "c2.mp4", "c3.mp4", "c1.mp4"]);
-    expect(new Set(completeBatch.map((item) => Object.values(item.slotAssets).map((asset) => asset.name).join("|"))).size).toBe(12);
+    expect(firstBatch.map((item) => Object.values(item.slotAssets).map((asset) => asset.name).join("|"))).toEqual([
+      "a1.mp4|b1.mp4|c1.mp4",
+      "a2.mp4|b1.mp4|c1.mp4",
+      "a1.mp4|b2.mp4|c1.mp4",
+      "a2.mp4|b2.mp4|c1.mp4"
+    ]);
+    expect(completeBatch.map((item) => Object.values(item.slotAssets).map((asset) => asset.name).join("|"))).toEqual([
+      "a1.mp4|b1.mp4|c1.mp4",
+      "a2.mp4|b1.mp4|c1.mp4",
+      "a1.mp4|b2.mp4|c1.mp4",
+      "a2.mp4|b2.mp4|c1.mp4",
+      "a1.mp4|b1.mp4|c2.mp4",
+      "a2.mp4|b1.mp4|c2.mp4",
+      "a1.mp4|b2.mp4|c2.mp4",
+      "a2.mp4|b2.mp4|c2.mp4",
+      "a1.mp4|b1.mp4|c3.mp4",
+      "a2.mp4|b1.mp4|c3.mp4",
+      "a1.mp4|b2.mp4|c3.mp4",
+      "a2.mp4|b2.mp4|c3.mp4"
+    ]);
   });
 
   it("selects one candidate from every bgm track", () => {
@@ -91,7 +109,7 @@ describe("createCombinations", () => {
     expect(combinations.at(-1)?.slotAssets).toMatchObject({
       A: expect.objectContaining({ name: "a2.mp4" }),
       B: expect.objectContaining({ name: "b2.mp4" }),
-      C: expect.objectContaining({ name: "c2.mp4" })
+      C: expect.objectContaining({ name: "c1.mp4" })
     });
   });
 

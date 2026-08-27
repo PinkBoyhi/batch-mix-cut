@@ -22,16 +22,14 @@ export function createCombinations(
 
   for (let index = 0; index < count; index += 1) {
     const slotAssets: Record<string, AssetInfo> = {};
-    let lowerSlotCombinations = 1;
+    let cursor = index;
 
-    for (const [slotIndex, slot] of sortedSlots.entries()) {
-      const baseAssetIndex = Math.floor(index / lowerSlotCombinations) % slot.assets.length;
-      // A、B 保持成对交叉；从 C 开始按前面段落的组合序号错位轮换。
-      // 这样截取前 N 条时，后续段落也会尽早分散，且完整生成时仍没有重复组合。
-      const lowerCombinationIndex = index % lowerSlotCombinations;
-      const assetIndex = slotIndex >= 2 ? (baseAssetIndex + lowerCombinationIndex) % slot.assets.length : baseAssetIndex;
+    // 严格笛卡尔积：A 变化最快，随后是 B、C、D。
+    // 不插入随机、抽样、错位或优先级规则，完整生成时每个素材都会与其他段落的每个素材组合一次。
+    for (const slot of sortedSlots) {
+      const assetIndex = cursor % slot.assets.length;
       slotAssets[slot.name] = slot.assets[assetIndex];
-      lowerSlotCombinations *= slot.assets.length;
+      cursor = Math.floor(cursor / slot.assets.length);
     }
 
     const id = `mix_${String(index + 1).padStart(4, "0")}`;

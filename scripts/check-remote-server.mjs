@@ -21,7 +21,7 @@ if (runRemoteWorkflow || !runLocalWorkflow) {
   if (Number(health.audioPipelineVersion ?? 0) < 2) {
     throw new Error("服务器混剪引擎版本过旧，未通过发布前检查");
   }
-  if (Number(health.combinationPipelineVersion ?? 0) < 2) {
+  if (Number(health.combinationPipelineVersion ?? 0) < 3) {
     throw new Error("服务器组合引擎版本过旧，无法保证开头素材轮换");
   }
 
@@ -91,10 +91,10 @@ async function runRemoteMixSmokeTest({ serverUrl, token }) {
     const completion = waitForTerminalSnapshot(client, "服务器完整混剪测试", 180_000);
     await client.start(fixture.config);
     const snapshot = await completion;
-    assertCompletedSnapshot(snapshot, "服务器完整混剪测试");
-    const files = await assertWorkflowOutputs(fixture.config.outputDir, 4, "服务器回传成片");
-    assertOpeningRotation(files, "服务器回传成片");
-    console.log("服务器完整混剪测试通过：4 个组合已混剪、开头轮换、回传并校验音视频流");
+    assertCompletedSnapshot(snapshot, "服务器完整混剪测试", fixture.expectedCount);
+    const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "服务器回传成片");
+    assertCartesianCombinationOrder(files, "服务器回传成片");
+    console.log("服务器完整混剪测试通过：8 个严格排列组合已混剪、回传并校验音视频流");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -110,10 +110,10 @@ async function runLocalMixWorkflowSmokeTest() {
     const completion = waitForTerminalSnapshot(manager, "本地完整混剪测试", 180_000);
     await manager.start(fixture.config);
     const snapshot = await completion;
-    assertCompletedSnapshot(snapshot, "本地完整混剪测试");
-    const files = await assertWorkflowOutputs(fixture.config.outputDir, 4, "本地成片");
-    assertOpeningRotation(files, "本地成片");
-    console.log("本地完整混剪测试通过：A=2、B=2、开头轮换、BGM轮换、声音和 MP4 输出均已校验");
+    assertCompletedSnapshot(snapshot, "本地完整混剪测试", fixture.expectedCount);
+    const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "本地成片");
+    assertCartesianCombinationOrder(files, "本地成片");
+    console.log("本地完整混剪测试通过：A=2、B=2、C=2 的 8 个严格排列组合、BGM轮换、声音和 MP4 输出均已校验");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -128,6 +128,8 @@ async function createWorkflowFixture(rootDir, mode) {
   const a2 = path.join(sourcesDir, "A-02.mp4");
   const b1 = path.join(sourcesDir, "B-01.mp4");
   const b2 = path.join(sourcesDir, "B-02.mp4");
+  const c1 = path.join(sourcesDir, "C-01.mp4");
+  const c2 = path.join(sourcesDir, "C-02.mp4");
   const bgm1 = path.join(sourcesDir, "BGM-01.m4a");
   const bgm2 = path.join(sourcesDir, "BGM-02.m4a");
   await Promise.all([
@@ -135,6 +137,8 @@ async function createWorkflowFixture(rootDir, mode) {
     createTestVideo(a2, { size: "568x320", rate: 24, duration: 0.7, frequency: 510 }),
     createTestVideo(b1, { size: "240x320", rate: 25, duration: 0.7, frequency: 620 }),
     createTestVideo(b2, { size: "320x240", rate: 60, duration: 0.8, frequency: 710 }),
+    createTestVideo(c1, { size: "320x568", rate: 30, duration: 0.6, frequency: 820 }),
+    createTestVideo(c2, { size: "568x320", rate: 24, duration: 0.6, frequency: 910 }),
     createTestAudio(bgm1, 800),
     createTestAudio(bgm2, 920)
   ]);
@@ -144,6 +148,8 @@ async function createWorkflowFixture(rootDir, mode) {
     a2: videoAsset(a2, "A-02.mp4", 568, 320, 0.7),
     b1: videoAsset(b1, "B-01.mp4", 240, 320, 0.7),
     b2: videoAsset(b2, "B-02.mp4", 320, 240, 0.8),
+    c1: videoAsset(c1, "C-01.mp4", 320, 568, 0.6),
+    c2: videoAsset(c2, "C-02.mp4", 568, 320, 0.6),
     bgm1: audioAsset(bgm1, "BGM-01.m4a"),
     bgm2: audioAsset(bgm2, "BGM-02.m4a")
   };
@@ -152,7 +158,8 @@ async function createWorkflowFixture(rootDir, mode) {
     outputDir,
     slots: [
       { name: "A", sortOrder: 0, assets: [assets.a1, assets.a2] },
-      { name: "B", sortOrder: 1, assets: [assets.b1, assets.b2] }
+      { name: "B", sortOrder: 1, assets: [assets.b1, assets.b2] },
+      { name: "C", sortOrder: 2, assets: [assets.c1, assets.c2] }
     ],
     bgmAssets: [assets.bgm1, assets.bgm2],
     bgmRange: { startSlotName: "B", endSlotName: "B", fadeInSeconds: 0.1, fadeOutSeconds: 0.2 },
@@ -165,7 +172,7 @@ async function createWorkflowFixture(rootDir, mode) {
         range: { startSlotName: "B", endSlotName: "B", fadeInSeconds: 0.1, fadeOutSeconds: 0.2 }
       }
     ],
-    maxCombinations: 4,
+    maxCombinations: 8,
     outputNamePattern: "",
     exportMode: "video",
     sourceVolume: 1,
@@ -179,14 +186,15 @@ async function createWorkflowFixture(rootDir, mode) {
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const { createCombinations } = await import(pathToFileURL(path.join(projectRoot, "dist-electron/electron/services/combinator.js")).href);
   const combinations = createCombinations(config.slots, config.bgmAssets, config.outputDir, config.maxCombinations, config.outputNamePattern, config.bgmTracks);
-  if (combinations.length !== 4) {
-    throw new Error(`组合测试失败：预期 4 条，实际 ${combinations.length} 条`);
+  if (combinations.length !== 8) {
+    throw new Error(`组合测试失败：预期 8 条，实际 ${combinations.length} 条`);
   }
   const bgmNames = combinations.map((combination) => combination.bgmTracks?.[0]?.asset.name);
-  if (bgmNames.join(",") !== "BGM-01.m4a,BGM-02.m4a,BGM-01.m4a,BGM-02.m4a") {
+  const expectedBgms = Array.from({ length: 8 }, (_, index) => `BGM-0${(index % 2) + 1}.m4a`);
+  if (bgmNames.join(",") !== expectedBgms.join(",")) {
     throw new Error(`BGM 轮换测试失败：${bgmNames.join(",")}`);
   }
-  return { config };
+  return { config, expectedCount: 8 };
 }
 
 function videoAsset(filePath, name, width, height, durationSeconds) {
@@ -220,8 +228,8 @@ function waitForTerminalSnapshot(emitter, label, timeoutMs) {
   });
 }
 
-function assertCompletedSnapshot(snapshot, label) {
-  if (snapshot.total !== 4 || snapshot.completed !== 4 || snapshot.failed !== 0) {
+function assertCompletedSnapshot(snapshot, label, expectedCount) {
+  if (snapshot.total !== expectedCount || snapshot.completed !== expectedCount || snapshot.failed !== 0) {
     throw new Error(`${label}结果不符合预期：总数 ${snapshot.total}，完成 ${snapshot.completed}，失败 ${snapshot.failed}`);
   }
 }
@@ -250,11 +258,20 @@ async function assertWorkflowOutputs(outputDir, expectedCount, label) {
   return files;
 }
 
-function assertOpeningRotation(files, label) {
-  const openings = files.map((file) => file.split("__")[1] ?? "");
-  const expected = ["A-01", "A-02", "A-01", "A-02"];
-  if (openings.join(",") !== expected.join(",")) {
-    throw new Error(`${label}开头轮换错误：预期 ${expected.join("、")}，实际 ${openings.join("、")}`);
+function assertCartesianCombinationOrder(files, label) {
+  const actual = files.map((file) => file.replace(/\.mp4$/i, "").split("__").slice(1).join("|"));
+  const expected = [
+    "A-01|B-01|C-01",
+    "A-02|B-01|C-01",
+    "A-01|B-02|C-01",
+    "A-02|B-02|C-01",
+    "A-01|B-01|C-02",
+    "A-02|B-01|C-02",
+    "A-01|B-02|C-02",
+    "A-02|B-02|C-02"
+  ];
+  if (actual.join(",") !== expected.join(",")) {
+    throw new Error(`${label}排列组合顺序错误：预期 ${expected.join("、")}，实际 ${actual.join("、")}`);
   }
 }
 
