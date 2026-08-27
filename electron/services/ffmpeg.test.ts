@@ -109,6 +109,98 @@ describe("exportVideo audio output", () => {
     },
     30000
   );
+
+  it(
+    "keeps background music audible when original video sound is disabled",
+    async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "yibo-mix-bgm-"));
+      tempDirs.push(tempDir);
+
+      const inputPath = path.join(tempDir, "silent-source.mp4");
+      const bgmPath = path.join(tempDir, "background.m4a");
+      const outputPath = path.join(tempDir, "mixed-output.mp4");
+      await runFfmpeg([
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x568:rate=30:duration=1",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+        inputPath
+      ]);
+      await runFfmpeg([
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=880:sample_rate=44100:duration=1",
+        "-c:a",
+        "aac",
+        bgmPath
+      ]);
+
+      const videoAsset: AssetInfo = {
+        id: "silent-source",
+        kind: "video",
+        name: "silent-source.mp4",
+        path: inputPath,
+        durationSeconds: 1,
+        width: 320,
+        height: 568,
+        hasAudio: false
+      };
+      const bgmAsset: AssetInfo = {
+        id: "background",
+        kind: "audio",
+        name: "background.m4a",
+        path: bgmPath,
+        durationSeconds: 1,
+        hasAudio: true
+      };
+      const config: MixProjectConfig = {
+        projectDir: tempDir,
+        outputDir: tempDir,
+        slots: [{ name: "A", assets: [videoAsset], sortOrder: 0 }],
+        bgmAssets: [bgmAsset],
+        bgmRange: { startSlotName: "A", endSlotName: "A", fadeInSeconds: 0, fadeOutSeconds: 0 },
+        bgmTracks: [],
+        maxCombinations: 1,
+        outputNamePattern: "mixed",
+        exportMode: "video",
+        sourceVolume: 0,
+        bgmVolume: 1,
+        normalizeLoudness: false,
+        videoProfile: {
+          codec: "h264",
+          audioCodec: "aac",
+          preset: "veryfast",
+          crf: 28,
+          canvasMode: "original"
+        },
+        exportTarget: "local",
+        draftSlots: []
+      };
+      const combination: MixCombination = {
+        id: "mix_0001",
+        index: 1,
+        slotAssets: { A: videoAsset },
+        bgm: bgmAsset,
+        targetVideoPath: outputPath,
+        targetDraftPath: path.join(tempDir, "draft")
+      };
+
+      await exportVideo(config, combination).promise;
+
+      await expect(measureMeanVolume(outputPath)).resolves.toBeGreaterThan(-35);
+    },
+    30000
+  );
 });
 
 function runFfmpeg(args: string[]): Promise<void> {

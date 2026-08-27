@@ -18,8 +18,8 @@ if (runRemoteWorkflow || !runLocalWorkflow) {
   if (!health.ok || !health.workspaceRoot) {
     throw new Error("服务器健康检查未通过");
   }
-  if (Number(health.audioPipelineVersion ?? 0) < 2) {
-    throw new Error("服务器混剪引擎版本过旧，未通过发布前检查");
+  if (Number(health.audioPipelineVersion ?? 0) < 3) {
+    throw new Error("服务器混剪引擎版本过旧，无法保证 BGM 已下载并混入成片");
   }
   if (Number(health.combinationPipelineVersion ?? 0) < 3) {
     throw new Error("服务器组合引擎版本过旧，无法保证开头素材轮换");
@@ -94,7 +94,7 @@ async function runRemoteMixSmokeTest({ serverUrl, token }) {
     assertCompletedSnapshot(snapshot, "服务器完整混剪测试", fixture.expectedCount);
     const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "服务器回传成片");
     assertCartesianCombinationOrder(files, "服务器回传成片");
-    console.log("服务器完整混剪测试通过：8 个严格排列组合已混剪、回传并校验音视频流");
+    console.log("服务器完整混剪测试通过：8 个严格排列组合已混剪、回传，并确认原声静音时 BGM 仍可听见");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -113,7 +113,7 @@ async function runLocalMixWorkflowSmokeTest() {
     assertCompletedSnapshot(snapshot, "本地完整混剪测试", fixture.expectedCount);
     const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "本地成片");
     assertCartesianCombinationOrder(files, "本地成片");
-    console.log("本地完整混剪测试通过：A=2、B=2、C=2 的 8 个严格排列组合、BGM轮换、声音和 MP4 输出均已校验");
+    console.log("本地完整混剪测试通过：A=2、B=2、C=2 的 8 个严格排列组合、BGM轮换，以及原声静音时的 BGM 音轨均已校验");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -175,8 +175,9 @@ async function createWorkflowFixture(rootDir, mode) {
     maxCombinations: 8,
     outputNamePattern: "",
     exportMode: "video",
-    sourceVolume: 1,
-    bgmVolume: 0.35,
+    // 让成片只能从 BGM 获得声音，防止“原声存在”掩盖背景音乐没有混入的问题。
+    sourceVolume: 0,
+    bgmVolume: 1,
     normalizeLoudness: true,
     videoProfile: { codec: "h264", audioCodec: "aac", preset: "ultrafast", crf: 30, canvasMode: "original" },
     exportTarget: mode === "remote" ? "server" : "local",
@@ -254,6 +255,7 @@ async function assertWorkflowOutputs(outputDir, expectedCount, label) {
     }
     await assertVisibleVideoFrame(filePath, label, file);
     await assertAudibleAudio(filePath, label, file);
+    await assertAudibleAudioAtTimestamp(filePath, 1, label, file);
   }));
   return files;
 }
@@ -327,6 +329,33 @@ async function assertAudibleAudio(filePath, label, fileName) {
   const match = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
   if (!match || Number(match[1]) <= -75) {
     throw new Error(`${label}音频疑似静音：${fileName}`);
+  }
+}
+
+async function assertAudibleAudioAtTimestamp(filePath, timestampSeconds, label, fileName) {
+  const require = createRequire(import.meta.url);
+  const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
+  const { stderr } = await collectProcessOutput(ffmpegPath, [
+    "-hide_banner",
+    "-nostats",
+    "-i",
+    filePath,
+    "-ss",
+    String(timestampSeconds),
+    "-t",
+    "0.2",
+    "-vn",
+    "-sn",
+    "-dn",
+    "-af",
+    "volumedetect",
+    "-f",
+    "null",
+    "-"
+  ]);
+  const match = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+  if (!match || Number(match[1]) <= -75) {
+    throw new Error(`${label}背景音乐未混入：${fileName}`);
   }
 }
 

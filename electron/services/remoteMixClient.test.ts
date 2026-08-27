@@ -64,7 +64,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 2, combinationPipelineVersion: 3 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 3, combinationPipelineVersion: 3 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {
@@ -94,7 +94,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 2, combinationPipelineVersion: 2 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 3, combinationPipelineVersion: 2 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {

@@ -39,7 +39,15 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     const { width, height } = resolveCanvasSize(config, first);
     const normalizeLoudness = config.normalizeLoudness !== false;
     const sourceLoudness = normalizeLoudness ? await resolveSourceLoudness(videoAssets) : [];
-    const bgmTracks = resolveCombinationBgmTracks(config, combination);
+    // BGM can come from a cloud asset as well as from local disk. Resolve it through
+    // the same cache path as video assets so the server never asks FFmpeg to mix an
+    // unreachable remote URL directly.
+    const bgmTracks = await Promise.all(
+      resolveCombinationBgmTracks(config, combination).map(async (track) => ({
+        ...track,
+        asset: await ensureLocalAsset(track.asset, config.outputDir)
+      }))
+    );
     const bgmLoudness = normalizeLoudness ? await resolveBgmLoudness(bgmTracks) : [];
 
     const args: string[] = ["-y"];
