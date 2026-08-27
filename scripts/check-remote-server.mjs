@@ -80,21 +80,30 @@ async function requestJson(url, headers = {}) {
 async function runRemoteMixSmokeTest({ serverUrl, token }) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "yibo-release-remote-mix-"));
   try {
-    const appDataDir = path.join(tempDir, "app-data");
-    await fs.mkdir(appDataDir, { recursive: true });
-    await fs.writeFile(path.join(appDataDir, "remote-mix-server.json"), JSON.stringify({ serverUrl, token }));
-    const fixture = await createWorkflowFixture(tempDir, "remote");
-
     const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const { RemoteMixClient } = await import(pathToFileURL(path.join(projectRoot, "dist-electron/electron/services/remoteMixClient.js")).href);
-    const client = new RemoteMixClient(() => appDataDir);
-    const completion = waitForTerminalSnapshot(client, "服务器完整混剪测试", 180_000);
-    await client.start(fixture.config);
-    const snapshot = await completion;
-    assertCompletedSnapshot(snapshot, "服务器完整混剪测试", fixture.expectedCount);
-    const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "服务器回传成片");
-    assertCartesianCombinationOrder(files, "服务器回传成片");
-    console.log("服务器完整混剪测试通过：8 个严格排列组合已混剪、回传，并确认原声静音时 BGM 仍可听见");
+    // 同时提交 3 个独立任务：验证两个服务器并发位和一个排队位都能稳定完成并回传。
+    const taskCount = 3;
+    const fixtures = await Promise.all(
+      Array.from({ length: taskCount }, (_, index) => createWorkflowFixture(path.join(tempDir, `task-${index + 1}`), "remote"))
+    );
+    const clients = await Promise.all(
+      fixtures.map(async (_, index) => {
+        const appDataDir = path.join(tempDir, `app-data-${index + 1}`);
+        await fs.mkdir(appDataDir, { recursive: true });
+        await fs.writeFile(path.join(appDataDir, "remote-mix-server.json"), JSON.stringify({ serverUrl, token }));
+        return new RemoteMixClient(() => appDataDir);
+      })
+    );
+    const completions = clients.map((client, index) => waitForTerminalSnapshot(client, `服务器完整混剪测试 ${index + 1}`, 240_000));
+    await Promise.all(clients.map((client, index) => client.start(fixtures[index].config)));
+    const snapshots = await Promise.all(completions);
+    for (const [index, fixture] of fixtures.entries()) {
+      assertCompletedSnapshot(snapshots[index], `服务器完整混剪测试 ${index + 1}`, fixture.expectedCount);
+      const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, `服务器回传成片 ${index + 1}`);
+      assertCartesianCombinationOrder(files, `服务器回传成片 ${index + 1}`);
+    }
+    console.log("服务器完整混剪测试通过：3 个并发/排队任务共 24 条严格排列组合均已混剪、回传，并确认原声静音时 BGM 仍可听见");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

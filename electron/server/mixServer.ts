@@ -41,6 +41,9 @@ const workspaceRoot = path.resolve(readArg("--workspace", process.env.MIX_SERVER
 const allowAnyPath = process.env.MIX_SERVER_ALLOW_ANY_PATH === "1";
 const maxUploadBytes = Number(process.env.MIX_SERVER_MAX_UPLOAD_MB ?? "20480") * 1024 * 1024;
 const maxConcurrentJobs = Math.max(1, Number(process.env.MIX_SERVER_MAX_CONCURRENT_JOBS ?? "2") || 2);
+const minFreeBytes = Math.max(1, Number(process.env.MIX_SERVER_MIN_FREE_GB ?? "30") || 30) * 1024 * 1024 * 1024;
+const projectRetentionHours = readNonNegativeNumber(process.env.MIX_SERVER_PROJECT_RETENTION_HOURS, 24);
+const projectCleanupIntervalMs = 60 * 60 * 1000;
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
 const audioPipelineVersion = 3;
 const combinationPipelineVersion = 3;
@@ -59,6 +62,11 @@ let dispatchingJobs = false;
 async function main(): Promise<void> {
   await fs.mkdir(path.join(workspaceRoot, "uploads"), { recursive: true });
   await fs.mkdir(path.join(workspaceRoot, "projects"), { recursive: true });
+  await cleanupExpiredServerProjects();
+  const cleanupTimer = setInterval(() => {
+    void cleanupExpiredServerProjects();
+  }, projectCleanupIntervalMs);
+  cleanupTimer.unref();
   await workflowStore.initialize();
   workflowStore.on("terminal", (record) => {
     if (!shouldNotifyWorkflow(record)) {
@@ -79,10 +87,13 @@ async function main(): Promise<void> {
 
   const server = http.createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
-      sendJson(response, 500, {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`服务器请求失败：${request.method ?? "UNKNOWN"} ${request.url ?? "/"}\n${error instanceof Error ? error.stack ?? message : message}`);
+      if (!response.headersSent && !response.writableEnded) {
+        sendJson(response, 500, { ok: false, error: message });
+      } else {
+        response.destroy(error instanceof Error ? error : undefined);
+      }
     });
   });
 
@@ -126,6 +137,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (request.method === "GET" && url.pathname === "/health") {
+    const storage = await readStorageStatus();
     sendJson(response, 200, {
       ok: true,
       service: "yibo-batch-mix-server",
@@ -136,7 +148,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       jobs: jobs.size,
       activeJobs: countActiveJobs(),
       queuedJobs: countQueuedJobs(),
-      maxConcurrentJobs
+      maxConcurrentJobs,
+      projectRetentionHours,
+      storage
     });
     return;
   }
@@ -226,7 +240,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       ...scan.config,
       ...(body.overrides ?? {})
     };
-    validateConfigPaths(config);
+    await validateMixConfig(config);
     const job = await startJob(config, body.workflowId);
     sendJson(response, 200, { ok: true, jobId: job.id, snapshot: job.snapshot, warnings: scan.warnings });
     return;
@@ -234,7 +248,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
   if (request.method === "POST" && url.pathname === "/api/jobs") {
     const body = await readJson<{ config: MixProjectConfig; workflowId?: string }>(request);
-    validateConfigPaths(body.config);
+    await validateMixConfig(body.config);
     const job = await startJob(body.config, body.workflowId);
     sendJson(response, 200, { ok: true, jobId: job.id, snapshot: job.snapshot });
     return;
@@ -350,6 +364,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 }
 
 async function startJob(config: MixProjectConfig, requestedWorkflowId?: string): Promise<ServerJob> {
+  await assertStorageCapacity();
   const id = `srv_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const existingWorkflow = requestedWorkflowId ? workflowStore.get(requestedWorkflowId) : undefined;
   const workflow = existingWorkflow ?? workflowStore.create({
@@ -359,6 +374,7 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
     totalVideos: config.maxCombinations
   });
   const manager = new JobManager();
+  let loggedFailureCount = 0;
   const job: ServerJob = {
     id,
     manager,
@@ -382,6 +398,14 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
   manager.on("update", (snapshot: BatchJobSnapshot) => {
     job.snapshot = snapshot;
     syncWorkflowFromJob(job, snapshot);
+    if (snapshot.failures.length > loggedFailureCount) {
+      const failure = snapshot.failures.at(-1);
+      loggedFailureCount = snapshot.failures.length;
+      console.error(`服务器混剪失败：${job.id} ${failure?.combinationId ?? "unknown"} ${failure?.message ?? snapshot.message}`);
+    }
+    if (isTerminalStatus(snapshot.status)) {
+      console.log(`服务器任务结束：${job.id}，完成 ${snapshot.completed}，失败 ${snapshot.failed}，${snapshot.message}`);
+    }
     if (isTerminalStatus(snapshot.status)) {
       void dispatchQueuedJobs();
     }
@@ -537,6 +561,11 @@ function readArg(name: string, fallback: string): string {
   return index >= 0 ? process.argv[index + 1] ?? fallback : fallback;
 }
 
+function readNonNegativeNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 function isAuthorized(request: IncomingMessage): boolean {
   return request.headers["x-mix-token"] === accessToken;
 }
@@ -577,21 +606,52 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
 
 async function saveRequestBodyToFile(request: IncomingMessage, targetPath: string): Promise<void> {
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await new Promise<void>((resolve, reject) => {
-    const output = createWriteStream(targetPath);
+  const declaredSize = Number(request.headers["content-length"] ?? "0");
+  if (Number.isFinite(declaredSize) && declaredSize > maxUploadBytes) {
+    throw new Error("上传文件超过服务器限制");
+  }
+  const temporaryPath = `${targetPath}.uploading-${randomUUID()}`;
+  try {
+    await new Promise<void>((resolve, reject) => {
+    const output = createWriteStream(temporaryPath);
     let size = 0;
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        request.unpipe(output);
+        output.destroy();
+        reject(error);
+        return;
+      }
+      resolve();
+    };
     request.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > maxUploadBytes) {
-        output.destroy(new Error("上传文件超过服务器限制"));
-        request.destroy();
+        const error = new Error("上传文件超过服务器限制");
+        finish(error);
+        request.destroy(error);
       }
     });
     request.pipe(output);
-    output.on("finish", resolve);
-    output.on("error", reject);
-    request.on("error", reject);
-  });
+    output.on("finish", () => {
+      if (Number.isFinite(declaredSize) && declaredSize > 0 && size !== declaredSize) {
+        finish(new Error(`上传文件不完整：预期 ${declaredSize} 字节，实际 ${size} 字节`));
+        return;
+      }
+      finish();
+    });
+    output.on("error", (error) => finish(error));
+    request.on("aborted", () => finish(new Error("客户端中断上传")));
+    request.on("error", (error) => finish(error));
+    });
+    await fs.rename(temporaryPath, targetPath);
+  } catch (error) {
+    await fs.unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function unzip(zipPath: string, targetDir: string): Promise<void> {
@@ -610,6 +670,32 @@ async function unzip(zipPath: string, targetDir: string): Promise<void> {
       }
     });
   });
+}
+
+async function validateMixConfig(config: MixProjectConfig): Promise<void> {
+  validateConfigPaths(config);
+  if (config.slots.length === 0) {
+    throw new Error("至少需要添加一个视频段落后才能开始服务器混剪");
+  }
+  const emptySlot = config.slots.find((slot) => slot.assets.length === 0);
+  if (emptySlot) {
+    throw new Error(`段落 ${emptySlot.name} 没有视频素材，无法开始服务器混剪`);
+  }
+  const assets = new Map<string, { name: string; path: string }>();
+  for (const slot of config.slots) {
+    for (const asset of slot.assets) assets.set(asset.path, asset);
+  }
+  for (const asset of config.bgmAssets) assets.set(asset.path, asset);
+  for (const track of config.bgmTracks ?? []) {
+    for (const asset of track.assets) assets.set(asset.path, asset);
+  }
+  for (const asset of assets.values()) {
+    if (/^https?:\/\//i.test(asset.path)) continue;
+    const stat = await fs.stat(asset.path).catch(() => undefined);
+    if (!stat?.isFile() || stat.size <= 0) {
+      throw new Error(`服务器素材不存在或上传不完整：${asset.name}`);
+    }
+  }
 }
 
 function validateConfigPaths(config: MixProjectConfig): void {
@@ -631,6 +717,74 @@ function validateConfigPaths(config: MixProjectConfig): void {
       assertAllowedAssetPath(asset.path);
     }
   }
+}
+
+async function assertStorageCapacity(): Promise<void> {
+  const storage = await readStorageStatus();
+  if (storage.freeBytes < storage.minFreeBytes) {
+    throw new Error(`服务器可用空间不足（剩余 ${formatGigabytes(storage.freeBytes)}GB，需要至少 ${formatGigabytes(storage.minFreeBytes)}GB）。请先清理已回传到本地的旧服务器项目。`);
+  }
+}
+
+async function cleanupExpiredServerProjects(): Promise<void> {
+  if (projectRetentionHours <= 0) {
+    return;
+  }
+  const activeProjectDirs = new Set(
+    Array.from(jobs.values())
+      .filter((job) => !isTerminalStatus(job.snapshot.status))
+      .map((job) => path.resolve(job.config.projectDir))
+  );
+  const removed = await cleanupExpiredProjects(
+    path.join(workspaceRoot, "projects"),
+    projectRetentionHours * 60 * 60 * 1000,
+    activeProjectDirs
+  );
+  if (removed > 0) {
+    console.log(`已自动清理 ${removed} 个超过 ${projectRetentionHours} 小时的服务器项目`);
+  }
+}
+
+export async function cleanupExpiredProjects(
+  projectsDir: string,
+  retentionMs: number,
+  activeProjectDirs: ReadonlySet<string> = new Set(),
+  now = Date.now()
+): Promise<number> {
+  if (retentionMs <= 0) {
+    return 0;
+  }
+  const entries = await fs.readdir(projectsDir, { withFileTypes: true }).catch(() => []);
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      continue;
+    }
+    const projectDir = path.resolve(projectsDir, entry.name);
+    if (activeProjectDirs.has(projectDir)) {
+      continue;
+    }
+    const stat = await fs.stat(projectDir).catch(() => undefined);
+    if (!stat || now - stat.mtimeMs < retentionMs) {
+      continue;
+    }
+    await fs.rm(projectDir, { recursive: true, force: true });
+    removed += 1;
+  }
+  return removed;
+}
+
+async function readStorageStatus(): Promise<{ freeBytes: number; totalBytes: number; usedPercent: number; minFreeBytes: number }> {
+  const stats = await fs.statfs(workspaceRoot);
+  const blockSize = Number(stats.bsize);
+  const totalBytes = Number(stats.blocks) * blockSize;
+  const freeBytes = Number(stats.bavail) * blockSize;
+  const usedPercent = totalBytes > 0 ? Math.round(((totalBytes - freeBytes) / totalBytes) * 100) : 0;
+  return { freeBytes, totalBytes, usedPercent, minFreeBytes };
+}
+
+function formatGigabytes(bytes: number): string {
+  return (Math.max(0, bytes) / 1024 / 1024 / 1024).toFixed(1);
 }
 
 function assertAllowedAssetPath(filePath: string): void {
@@ -680,7 +834,7 @@ async function listOutputVideos(dir: string): Promise<Array<{ name: string; path
       url: `/api/jobs/:jobId/outputs/${encodeURIComponent(entry.name)}`
     });
   }
-  return files;
+  return files.sort((left, right) => left.name.localeCompare(right.name, "zh-CN", { numeric: true }));
 }
 
 async function sendFile(response: ServerResponse, filePath: string): Promise<void> {
@@ -694,7 +848,10 @@ async function sendFile(response: ServerResponse, filePath: string): Promise<voi
     const stream = createReadStream(filePath);
     stream.pipe(response);
     stream.on("end", resolve);
-    stream.on("error", reject);
+    stream.on("error", (error) => {
+      response.destroy(error);
+      reject(error);
+    });
   });
 }
 

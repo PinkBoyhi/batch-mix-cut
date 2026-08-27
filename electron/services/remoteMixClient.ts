@@ -20,6 +20,9 @@ const CONFIG_FILE = "remote-mix-server.json";
 const DEFAULT_SERVER_URL = "http://10.0.0.133:8787";
 const MIN_SERVER_AUDIO_PIPELINE_VERSION = 3;
 const MIN_SERVER_COMBINATION_PIPELINE_VERSION = 3;
+const REQUEST_TIMEOUT_MS = 20_000;
+const TRANSFER_RETRY_ATTEMPTS = 3;
+const POLL_FAILURE_LIMIT = 8;
 
 interface StoredRemoteSettings extends RemoteMixSettings {}
 
@@ -28,6 +31,10 @@ interface RemoteHealth {
   workspaceRoot: string;
   audioPipelineVersion?: number;
   combinationPipelineVersion?: number;
+  storage?: {
+    freeBytes?: number;
+    minFreeBytes?: number;
+  };
 }
 
 interface RemoteJobResponse {
@@ -92,6 +99,14 @@ export class RemoteMixClient extends EventEmitter {
         message: "服务器混剪引擎较旧，已启用音频兼容模式；建议尽快更新服务器。"
       };
     }
+    if (hasInsufficientStorage(health)) {
+      return {
+        serverUrl: activeSettings.serverUrl,
+        hasToken: Boolean(activeSettings.token),
+        ok: false,
+        message: describeInsufficientStorage(health)
+      };
+    }
     return {
       serverUrl: activeSettings.serverUrl,
       hasToken: Boolean(activeSettings.token),
@@ -114,6 +129,9 @@ export class RemoteMixClient extends EventEmitter {
     }
     if (!supportsCombinationPipeline(health)) {
       throw new Error("服务器混剪引擎较旧，无法保证开头素材轮换；请先更新服务器后再开始混剪。");
+    }
+    if (hasInsufficientStorage(health)) {
+      throw new Error(describeInsufficientStorage(health));
     }
 
     this.stopped = false;
@@ -180,13 +198,35 @@ export class RemoteMixClient extends EventEmitter {
     originalConfig: MixProjectConfig,
     monitor?: WorkflowMonitorClient
   ): Promise<void> {
+    let consecutiveFailures = 0;
     while (!this.stopped && this.currentJobId) {
       await delay(1200);
-      const response = await this.requestJson<{ ok: boolean; snapshot: BatchJobSnapshot }>(
-        settings,
-        "GET",
-        `/api/jobs/${encodeURIComponent(this.currentJobId)}`
-      );
+      let response: { ok: boolean; snapshot: BatchJobSnapshot };
+      try {
+        response = await this.requestJson<{ ok: boolean; snapshot: BatchJobSnapshot }>(
+          settings,
+          "GET",
+          `/api/jobs/${encodeURIComponent(this.currentJobId)}`
+        );
+        consecutiveFailures = 0;
+      } catch (error) {
+        consecutiveFailures += 1;
+        const message = `服务器连接暂时中断（${consecutiveFailures}/${POLL_FAILURE_LIMIT}），正在重试：${toErrorMessage(error)}`;
+        this.emitSnapshot({
+          ...this.snapshot,
+          status: this.snapshot.status === "paused" ? "paused" : "running",
+          message
+        });
+        await monitor?.update({
+          stage: "mixing",
+          status: "active",
+          progress: { message }
+        });
+        if (consecutiveFailures >= POLL_FAILURE_LIMIT) {
+          throw new Error(`服务器连接连续失败 ${POLL_FAILURE_LIMIT} 次：${toErrorMessage(error)}`);
+        }
+        continue;
+      }
       if (!["completed", "failed", "idle"].includes(response.snapshot.status)) {
         this.emitSnapshot(response.snapshot);
         continue;
@@ -274,12 +314,18 @@ export class RemoteMixClient extends EventEmitter {
       const remoteRelativePath = path.posix.join("projects", projectId, folder, remoteFileName(asset.path));
       const remoteAbsolutePath = path.posix.join(workspaceRoot, remoteRelativePath);
       this.emitSnapshot({ ...this.snapshot, status: "running", message: `正在上传服务器素材：${asset.name}` });
-      await uploadFile(settings, `/api/files/upload?path=${encodeURIComponent(remoteRelativePath)}`, asset.path, (current, total) => {
-        void monitor?.update({
-          stage: "asset_transfer",
-          status: "active",
-          progress: { current, total, unit: "bytes", message: `正在传输素材：${asset.name}` }
-        }, true);
+      await retryTransfer(`上传素材 ${asset.name}`, async () => {
+        await uploadFile(settings, `/api/files/upload?path=${encodeURIComponent(remoteRelativePath)}`, asset.path, (current, total) => {
+          void monitor?.update({
+            stage: "asset_transfer",
+            status: "active",
+            progress: { current, total, unit: "bytes", message: `正在传输素材：${asset.name}` }
+          }, true);
+        });
+      }, (attempt, error) => {
+        const message = `上传素材失败，正在重试（${attempt}/${TRANSFER_RETRY_ATTEMPTS}）：${asset.name}，${toErrorMessage(error)}`;
+        this.emitSnapshot({ ...this.snapshot, status: "running", message });
+        void monitor?.update({ stage: "asset_transfer", status: "active", progress: { message } });
       });
       assetMap.set(asset.path, remoteAbsolutePath);
       return toRemoteAsset(asset, remoteAbsolutePath, useLegacyAudioCompatibility);
@@ -294,8 +340,19 @@ export class RemoteMixClient extends EventEmitter {
       slots.push({ ...slot, assets });
     }
 
+    const sourceBgmTracks = config.bgmTracks?.length
+      ? config.bgmTracks
+      : config.bgmAssets.length > 0
+        ? [{
+            id: "bgm_1",
+            name: "BGM 1",
+            assets: config.bgmAssets,
+            range: config.bgmRange,
+            sortOrder: 0
+          }]
+        : [];
     const bgmTracks = [];
-    for (const track of config.bgmTracks ?? []) {
+    for (const track of sourceBgmTracks) {
       const assets = [];
       for (const asset of track.assets) {
         assets.push(await uploadAsset(asset, `BGM/${track.id}`));
@@ -320,10 +377,11 @@ export class RemoteMixClient extends EventEmitter {
     completedSnapshot: BatchJobSnapshot,
     monitor?: WorkflowMonitorClient
   ): Promise<void> {
-    if (!this.currentJobId) {
+    const jobId = this.currentJobId;
+    if (!jobId) {
       return;
     }
-    const response = await this.requestJson<RemoteOutputsResponse>(settings, "GET", `/api/jobs/${encodeURIComponent(this.currentJobId)}/outputs`);
+    const response = await this.requestJson<RemoteOutputsResponse>(settings, "GET", `/api/jobs/${encodeURIComponent(jobId)}/outputs`);
     if (response.files.length === 0) {
       throw new Error("服务器任务已完成，但没有返回可下载的 MP4 成片");
     }
@@ -331,18 +389,25 @@ export class RemoteMixClient extends EventEmitter {
     await fs.mkdir(localVideosDir, { recursive: true });
     for (const [index, file] of response.files.entries()) {
       this.emitSnapshot({ ...this.snapshot, message: `正在下载服务器成片：${file.name}` });
-      await downloadFile(
-        settings,
-        `/api/jobs/${encodeURIComponent(this.currentJobId)}/outputs/${encodeURIComponent(file.name)}`,
-        path.join(localVideosDir, file.name),
-        (current, total) => {
-          void monitor?.update({
-            stage: "output_download",
-            status: "active",
-            progress: { current, total, unit: "bytes", message: `正在下载成片 ${index + 1}/${response.files.length}：${file.name}` }
-          }, true);
-        }
-      );
+      await retryTransfer(`下载成片 ${file.name}`, async () => {
+        await downloadFile(
+          settings,
+          `/api/jobs/${encodeURIComponent(jobId)}/outputs/${encodeURIComponent(file.name)}`,
+          path.join(localVideosDir, file.name),
+          file.size,
+          (current, total) => {
+            void monitor?.update({
+              stage: "output_download",
+              status: "active",
+              progress: { current, total, unit: "bytes", message: `正在下载成片 ${index + 1}/${response.files.length}：${file.name}` }
+            }, true);
+          }
+        );
+      }, (attempt, error) => {
+        const message = `下载成片失败，正在重试（${attempt}/${TRANSFER_RETRY_ATTEMPTS}）：${file.name}，${toErrorMessage(error)}`;
+        this.emitSnapshot({ ...this.snapshot, status: "running", message });
+        void monitor?.update({ stage: "output_download", status: "active", progress: { message } });
+      });
     }
     this.emitSnapshot({
       ...completedSnapshot,
@@ -359,14 +424,20 @@ export class RemoteMixClient extends EventEmitter {
   }
 
   private async requestJson<T>(settings: StoredRemoteSettings, method: "GET" | "POST", endpoint: string, body?: unknown): Promise<T> {
-    const response = await fetch(`${settings.serverUrl}${endpoint}`, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        "x-mix-token": settings.token ?? ""
-      },
-      body: body === undefined ? undefined : JSON.stringify(body)
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${settings.serverUrl}${endpoint}`, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "x-mix-token": settings.token ?? ""
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      });
+    } catch (error) {
+      throw new Error(`服务器请求超时或连接失败：${toErrorMessage(error)}`);
+    }
     const text = await response.text();
     let payload: T;
     try {
@@ -424,6 +495,18 @@ function supportsCombinationPipeline(health: RemoteHealth): boolean {
   return (health.combinationPipelineVersion ?? 0) >= MIN_SERVER_COMBINATION_PIPELINE_VERSION;
 }
 
+function hasInsufficientStorage(health: RemoteHealth): boolean {
+  const freeBytes = health.storage?.freeBytes;
+  const minFreeBytes = health.storage?.minFreeBytes;
+  return typeof freeBytes === "number" && typeof minFreeBytes === "number" && freeBytes < minFreeBytes;
+}
+
+function describeInsufficientStorage(health: RemoteHealth): string {
+  const freeGb = bytesToGb(health.storage?.freeBytes ?? 0);
+  const minGb = bytesToGb(health.storage?.minFreeBytes ?? 0);
+  return `服务器可用空间不足（剩余 ${freeGb}GB，需要至少 ${minGb}GB）。请先清理服务器已回传的旧项目，再开始混剪。`;
+}
+
 export function toRemoteAsset(asset: AssetInfo, remotePath: string, useLegacyAudioCompatibility: boolean): AssetInfo {
   if (useLegacyAudioCompatibility && asset.kind === "video" && asset.hasAudio === true) {
     // Older servers re-probe uploaded videos and can falsely report no audio.
@@ -475,10 +558,14 @@ async function downloadFile(
   settings: StoredRemoteSettings,
   endpoint: string,
   targetPath: string,
+  expectedSize: number,
   onProgress?: (current: number, total: number) => void
 ): Promise<void> {
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await new Promise<void>((resolve, reject) => {
+  const temporaryPath = `${targetPath}.downloading-${process.pid}-${Date.now()}`;
+  await fs.unlink(temporaryPath).catch(() => undefined);
+  try {
+    await new Promise<void>((resolve, reject) => {
     const url = new URL(`${settings.serverUrl}${endpoint}`);
     const request = (url.protocol === "https:" ? https : http).request(
       url,
@@ -494,19 +581,43 @@ async function downloadFile(
         }
         const total = Number(response.headers["content-length"] ?? "0");
         let current = 0;
+        let settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          error ? reject(error) : resolve();
+        };
         response.on("data", (chunk: Buffer) => {
           current += chunk.length;
           onProgress?.(current, total);
         });
-        const output = createWriteStream(targetPath);
+        response.on("error", (error) => finish(error));
+        response.on("aborted", () => finish(new Error("服务器成片下载中断")));
+        const output = createWriteStream(temporaryPath);
         response.pipe(output);
-        output.on("finish", () => output.close(() => resolve()));
-        output.on("error", reject);
+        output.on("finish", () => output.close(() => {
+          const requiredSize = total > 0 ? total : expectedSize;
+          if (requiredSize > 0 && current !== requiredSize) {
+            finish(new Error(`服务器成片下载不完整：预期 ${requiredSize} 字节，实际 ${current} 字节`));
+            return;
+          }
+          finish();
+        }));
+        output.on("error", (error) => finish(error));
       }
     );
     request.on("error", reject);
     request.end();
-  });
+    });
+    const stat = await fs.stat(temporaryPath);
+    if (expectedSize > 0 && stat.size !== expectedSize) {
+      throw new Error(`服务器成片下载不完整：预期 ${expectedSize} 字节，实际 ${stat.size} 字节`);
+    }
+    await fs.rename(temporaryPath, targetPath);
+  } catch (error) {
+    await fs.unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function streamRequest(
@@ -554,4 +665,29 @@ async function streamRequest(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryTransfer<T>(
+  label: string,
+  operation: () => Promise<T>,
+  onRetry: (attempt: number, error: unknown) => void
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= TRANSFER_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt === TRANSFER_RETRY_ATTEMPTS) {
+        break;
+      }
+      onRetry(attempt + 1, error);
+      await delay(attempt * 800);
+    }
+  }
+  throw new Error(`${label}失败，已重试 ${TRANSFER_RETRY_ATTEMPTS} 次：${toErrorMessage(lastError ?? "未知错误")}`);
+}
+
+function bytesToGb(value: number): string {
+  return (Math.max(0, value) / 1024 / 1024 / 1024).toFixed(1);
 }

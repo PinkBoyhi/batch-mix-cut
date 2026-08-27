@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WorkflowRecord } from "../../src/shared/types.js";
-import { resolveCloudUploadVideos, shouldNotifyWorkflow } from "./mixServer.js";
+import { cleanupExpiredProjects, resolveCloudUploadVideos, shouldNotifyWorkflow } from "./mixServer.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -47,6 +47,31 @@ describe("resolveCloudUploadVideos", () => {
         reason: "服务器未找到对应的已生成 MP4 成片"
       })
     ]);
+  });
+});
+
+describe("cleanupExpiredProjects", () => {
+  it("只清理过期且不在执行中的服务器项目", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mix-server-cleanup-"));
+    temporaryDirectories.push(workspace);
+    const projectsDir = path.join(workspace, "projects");
+    const expired = path.join(projectsDir, "expired");
+    const active = path.join(projectsDir, "active");
+    const recent = path.join(projectsDir, "recent");
+    await Promise.all([expired, active, recent].map((directory) => fs.mkdir(directory, { recursive: true })));
+    const now = Date.now();
+    const oldTime = new Date(now - 25 * 60 * 60 * 1000);
+    await Promise.all([
+      fs.utimes(expired, oldTime, oldTime),
+      fs.utimes(active, oldTime, oldTime)
+    ]);
+
+    const removed = await cleanupExpiredProjects(projectsDir, 24 * 60 * 60 * 1000, new Set([active]), now);
+
+    expect(removed).toBe(1);
+    await expect(fs.stat(expired)).rejects.toThrow();
+    await expect(fs.stat(active)).resolves.toBeDefined();
+    await expect(fs.stat(recent)).resolves.toBeDefined();
   });
 });
 
