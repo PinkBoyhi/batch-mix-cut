@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
@@ -36,7 +36,7 @@ function getBinaryPath(kind: BinaryKind): string {
 function resolveBundledBinary(kind: BinaryKind): string {
   const binaryName = process.platform === "win32" ? `${kind}.exe` : kind;
   const configuredPath = process.env[kind === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH"]?.trim();
-  if (configuredPath && existsSync(configuredPath)) {
+  if (configuredPath && isUsableBinary(configuredPath)) {
     return configuredPath;
   }
 
@@ -44,7 +44,7 @@ function resolveBundledBinary(kind: BinaryKind): string {
     const directPackage = kind === "ffmpeg" ? "@ffmpeg-installer/win32-x64" : "@ffprobe-installer/win32-x64";
     if (process.platform === "win32" && process.arch === "x64") {
       const directPath = unpackAsarPath(require.resolve(`${directPackage}/${binaryName}`));
-      if (existsSync(directPath)) {
+      if (isUsableBinary(directPath)) {
         return directPath;
       }
     }
@@ -57,7 +57,7 @@ function resolveBundledBinary(kind: BinaryKind): string {
     const installer = require(installerPackage) as { path?: string };
     if (installer.path) {
       const installerPath = unpackAsarPath(installer.path);
-      if (existsSync(installerPath)) {
+      if (isUsableBinary(installerPath)) {
         return installerPath;
       }
     }
@@ -66,6 +66,21 @@ function resolveBundledBinary(kind: BinaryKind): string {
   }
 
   return binaryName;
+}
+
+function isUsableBinary(binaryPath: string): boolean {
+  if (!existsSync(binaryPath)) {
+    return false;
+  }
+  if (process.platform === "win32") {
+    return true;
+  }
+  try {
+    accessSync(binaryPath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function unpackAsarPath(binaryPath: string): string {

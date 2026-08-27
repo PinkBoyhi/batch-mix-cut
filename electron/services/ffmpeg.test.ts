@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AssetInfo, MixCombination, MixProjectConfig } from "../../src/shared/types.js";
-import { exportVideo, mergeAssetMetadata } from "./ffmpeg.js";
+import { exportVideo, mergeAssetMetadata, resolveBgmTargetDb } from "./ffmpeg.js";
 import { getFfmpegPath } from "./ffmpegBinaries.js";
 
 let tempDirs: string[] = [];
@@ -27,6 +27,15 @@ describe("exportVideo audio output", () => {
     expect(mergeAssetMetadata(asset, { hasAudio: false, durationSeconds: 2 })).toEqual(
       expect.objectContaining({ hasAudio: true, durationSeconds: 2 })
     );
+    expect(
+      mergeAssetMetadata({ ...asset, durationSeconds: 5, width: 1080, height: 1920 }, { hasAudio: false })
+    ).toEqual(expect.objectContaining({ hasAudio: true, durationSeconds: 5, width: 1080, height: 1920 }));
+  });
+
+  it("raises BGM to an audible background level when source footage is much louder", () => {
+    expect(resolveBgmTargetDb([{ meanDb: -11.1, gainDb: -1.5 }])).toBeCloseTo(-18.6);
+    expect(resolveBgmTargetDb([{ meanDb: -30, gainDb: 0 }])).toBe(-23);
+    expect(resolveBgmTargetDb([])).toBe(-23);
   });
 
   it(

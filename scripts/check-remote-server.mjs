@@ -103,7 +103,7 @@ async function runRemoteMixSmokeTest({ serverUrl, token }) {
       const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, `服务器回传成片 ${index + 1}`);
       assertCartesianCombinationOrder(files, `服务器回传成片 ${index + 1}`);
     }
-    console.log("服务器完整混剪测试通过：3 个并发/排队任务共 24 条严格排列组合均已混剪、回传，并确认原声静音时 BGM 仍可听见");
+    console.log("服务器完整混剪测试通过：3 个并发/排队任务共 24 条严格排列组合均已混剪、回传，并确认强原声下 B 段 BGM 仍可听见");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -122,7 +122,7 @@ async function runLocalMixWorkflowSmokeTest() {
     assertCompletedSnapshot(snapshot, "本地完整混剪测试", fixture.expectedCount);
     const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "本地成片");
     assertCartesianCombinationOrder(files, "本地成片");
-    console.log("本地完整混剪测试通过：A=2、B=2、C=2 的 8 个严格排列组合、BGM轮换，以及原声静音时的 BGM 音轨均已校验");
+    console.log("本地完整混剪测试通过：A=2、B=2、C=2 的 8 个严格排列组合、BGM 轮换，以及强原声下 B 段的 BGM 音量均已校验");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -142,12 +142,12 @@ async function createWorkflowFixture(rootDir, mode) {
   const bgm1 = path.join(sourcesDir, "BGM-01.m4a");
   const bgm2 = path.join(sourcesDir, "BGM-02.m4a");
   await Promise.all([
-    createTestVideo(a1, { size: "320x568", rate: 30, duration: 0.8, frequency: 430 }),
-    createTestVideo(a2, { size: "568x320", rate: 24, duration: 0.7, frequency: 510 }),
-    createTestVideo(b1, { size: "240x320", rate: 25, duration: 0.7, frequency: 620 }),
-    createTestVideo(b2, { size: "320x240", rate: 60, duration: 0.8, frequency: 710 }),
-    createTestVideo(c1, { size: "320x568", rate: 30, duration: 0.6, frequency: 820 }),
-    createTestVideo(c2, { size: "568x320", rate: 24, duration: 0.6, frequency: 910 }),
+    createTestVideo(a1, { size: "320x568", rate: 30, duration: 0.8, frequency: 430, audioVolume: 6 }),
+    createTestVideo(a2, { size: "568x320", rate: 24, duration: 0.7, frequency: 510, audioVolume: 6 }),
+    createTestVideo(b1, { size: "240x320", rate: 25, duration: 0.7, frequency: 620, audioVolume: 6 }),
+    createTestVideo(b2, { size: "320x240", rate: 60, duration: 0.8, frequency: 710, audioVolume: 6 }),
+    createTestVideo(c1, { size: "320x568", rate: 30, duration: 0.6, frequency: 820, audioVolume: 6 }),
+    createTestVideo(c2, { size: "568x320", rate: 24, duration: 0.6, frequency: 910, audioVolume: 6 }),
     createTestAudio(bgm1, 800),
     createTestAudio(bgm2, 920)
   ]);
@@ -184,8 +184,8 @@ async function createWorkflowFixture(rootDir, mode) {
     maxCombinations: 8,
     outputNamePattern: "",
     exportMode: "video",
-    // 让成片只能从 BGM 获得声音，防止“原声存在”掩盖背景音乐没有混入的问题。
-    sourceVolume: 0,
+    // 保留强原声，验证背景音乐不会只存在于音轨里却被人声完全盖住。
+    sourceVolume: 1,
     bgmVolume: 1,
     normalizeLoudness: true,
     videoProfile: { codec: "h264", audioCodec: "aac", preset: "ultrafast", crf: 30, canvasMode: "original" },
@@ -250,7 +250,7 @@ async function assertWorkflowOutputs(outputDir, expectedCount, label) {
   if (files.length !== expectedCount) {
     throw new Error(`${label}数量错误：预期 ${expectedCount}，实际 ${files.length}`);
   }
-  await Promise.all(files.map(async (file) => {
+  await Promise.all(files.map(async (file, index) => {
     const filePath = path.join(videosDir, file);
     const stat = await fs.stat(filePath);
     if (stat.size < 1024) {
@@ -265,6 +265,7 @@ async function assertWorkflowOutputs(outputDir, expectedCount, label) {
     await assertVisibleVideoFrame(filePath, label, file);
     await assertAudibleAudio(filePath, label, file);
     await assertAudibleAudioAtTimestamp(filePath, 1, label, file);
+    await assertBgmToneAtTimestamp(filePath, 1, index % 2 === 0 ? 800 : 920, label, file);
   }));
   return files;
 }
@@ -368,7 +369,37 @@ async function assertAudibleAudioAtTimestamp(filePath, timestampSeconds, label, 
   }
 }
 
-async function createTestVideo(targetPath, { size, rate, duration, frequency }) {
+async function assertBgmToneAtTimestamp(filePath, timestampSeconds, frequency, label, fileName) {
+  const require = createRequire(import.meta.url);
+  const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
+  const { stderr } = await collectProcessOutput(ffmpegPath, [
+    "-hide_banner",
+    "-nostats",
+    "-ss",
+    String(timestampSeconds),
+    "-t",
+    "0.2",
+    "-i",
+    filePath,
+    "-vn",
+    "-sn",
+    "-dn",
+    "-af",
+    `bandpass=f=${frequency}:w=120,volumedetect`,
+    "-f",
+    "null",
+    "-"
+  ]);
+  const match = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+  const meanDb = match ? Number(match[1]) : Number.NEGATIVE_INFINITY;
+  // 测试素材的原声频率与 BGM 频率相隔至少 90 Hz。没有 BGM 时，该频段低于
+  // -35 dB；混入并保留背景音量后约为 -23 dB。留出编码误差后以 -30 dB 为下限。
+  if (meanDb <= -30) {
+    throw new Error(`${label}背景音乐音量不足：${fileName}（${meanDb.toFixed(1)} dB）`);
+  }
+}
+
+async function createTestVideo(targetPath, { size, rate, duration, frequency, audioVolume = 1 }) {
   const require = createRequire(import.meta.url);
   const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
   await runProcess(ffmpegPath, [
@@ -380,7 +411,7 @@ async function createTestVideo(targetPath, { size, rate, duration, frequency }) 
       "-i", `testsrc2=size=${size}:rate=${rate}`,
       "-f",
       "lavfi",
-      "-i", `sine=frequency=${frequency}:sample_rate=48000`,
+      "-i", `sine=frequency=${frequency}:sample_rate=48000,volume=${audioVolume}`,
       "-t",
       String(duration),
       "-c:v",

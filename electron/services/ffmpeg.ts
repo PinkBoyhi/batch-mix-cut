@@ -48,7 +48,10 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
         asset: await ensureLocalAsset(track.asset, config.outputDir)
       }))
     );
-    const bgmLoudness = normalizeLoudness ? await resolveBgmLoudness(bgmTracks) : [];
+    const bgmTargetDb = resolveBgmTargetDb(sourceLoudness);
+    const bgmLoudness = normalizeLoudness
+      ? await resolveBgmLoudness(bgmTracks, bgmTargetDb)
+      : [];
 
     const args: string[] = ["-y"];
     for (const asset of videoAssets) {
@@ -212,6 +215,12 @@ export function mergeAssetMetadata(asset: AssetInfo, metadata: Partial<AssetInfo
   return {
     ...asset,
     ...metadata,
+    // When a server-side probe is unavailable, keep the dimensions and duration
+    // already measured on the desktop. Losing duration makes a BGM range collapse
+    // to the 0.1 second fallback for every segment.
+    durationSeconds: metadata.durationSeconds ?? asset.durationSeconds,
+    width: metadata.width ?? asset.width,
+    height: metadata.height ?? asset.height,
     hasAudio: asset.hasAudio === true || metadata.hasAudio === true
   };
 }
@@ -312,7 +321,10 @@ async function resolveSourceLoudness(videoAssets: AssetInfo[]): Promise<Array<{ 
   }));
 }
 
-async function resolveBgmLoudness(tracks: MixCombinationBgmTrack[]): Promise<Array<{ meanDb?: number; gainDb: number }>> {
+async function resolveBgmLoudness(
+  tracks: MixCombinationBgmTrack[],
+  minimumTargetDb: number
+): Promise<Array<{ meanDb?: number; gainDb: number }>> {
   const measured: Array<VolumeStats & { gainDb: number }> = [];
   let referenceDb: number | undefined;
 
@@ -324,11 +336,26 @@ async function resolveBgmLoudness(tracks: MixCombinationBgmTrack[]): Promise<Arr
     measured.push({ ...stats, gainDb: 0 });
   }
 
-  const targetDb = resolveReferenceTargetDb(referenceDb);
+  // The first BGM still defines the reference between BGM tracks. When source
+  // footage is much louder, lift that reference enough for the music to remain
+  // audible as background instead of disappearing beneath speech.
+  const targetDb = Math.max(resolveReferenceTargetDb(referenceDb), minimumTargetDb);
   return measured.map((item) => ({
     meanDb: item.meanDb,
     gainDb: computeLoudnessGain(item, targetDb)
   }));
+}
+
+export function resolveBgmTargetDb(sourceLoudness: Array<{ meanDb?: number; gainDb: number }>): number {
+  const effectiveMeans = sourceLoudness
+    .map((item) => (typeof item.meanDb === "number" && Number.isFinite(item.meanDb) ? item.meanDb + item.gainDb : undefined))
+    .filter((value): value is number => value !== undefined && Number.isFinite(value));
+  if (effectiveMeans.length === 0) {
+    return TARGET_AUDIBLE_MEAN_DB;
+  }
+  // Keep music about 6 dB below the loudest normalized source: clearly audible
+  // while still leaving speech in front.
+  return Math.max(TARGET_AUDIBLE_MEAN_DB, Math.max(...effectiveMeans) - 6);
 }
 
 function resolveCombinationBgmTracks(config: MixProjectConfig, combination: MixCombination): MixCombinationBgmTrack[] {

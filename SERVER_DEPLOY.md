@@ -56,6 +56,15 @@ pnpm build
 x-mix-token: <启动日志里的 Token>
 ```
 
+## 推荐的 systemd 部署
+
+正式服务器不要把混剪服务运行在其他工作台会同步覆盖的代码目录中。建议把本项目部署到独立目录 `/home/fczj/.local/share/yibo-mix-server`，并使用仓库内的 `deploy/yibo-mix-server.service` 作为用户级 systemd 服务。这样其他工作台发布旧版本时，不会覆盖正在运行的混剪引擎。
+
+服务默认会保留已完成项目 24 小时后自动清理，并要求至少保留 30GB 可用磁盘空间。可通过以下环境变量调整：
+
+- `MIX_SERVER_PROJECT_RETENTION_HOURS`：项目保留小时数，设为 `0` 可关闭自动清理。
+- `MIX_SERVER_MIN_FREE_GB`：启动新任务前需保留的最小可用空间，默认 `30`。
+
 ## 任务分身与并发
 
 - 桌面端点击“新建任务分身”可创建独立项目窗口；每个窗口可使用不同素材、输出目录和服务器设置。
