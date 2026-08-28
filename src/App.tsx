@@ -157,6 +157,7 @@ export default function App() {
       return;
     }
     const nextActiveTab = tabs[tabIndex - 1] ?? tabs[tabIndex + 1];
+    void window.batchMix?.disposeTask(taskId).catch(() => undefined);
     setTabs((currentTabs) => currentTabs.filter((currentTab) => currentTab.id !== taskId));
     if (activeTabId === taskId && nextActiveTab) {
       setActiveTabId(nextActiveTab.id);

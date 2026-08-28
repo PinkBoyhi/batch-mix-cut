@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 import type {
   BatchJobSnapshot,
   MixExecutionTarget,
@@ -9,6 +8,7 @@ import type {
   WorkflowRecord
 } from "../../src/shared/types.js";
 import { resolveWorkflowTitle } from "./workflowTitle.js";
+import { getLegacyConfigPath, getTaskScopedConfigPath } from "./taskScopedConfig.js";
 
 const CONFIG_FILE = "remote-mix-server.json";
 
@@ -27,7 +27,10 @@ export class WorkflowMonitorClient {
   private settings?: ServerSettings;
   private lastReportAt = 0;
 
-  constructor(private readonly getUserDataDir: () => string) {}
+  constructor(
+    private readonly getUserDataDir: () => string,
+    private readonly taskId = "default"
+  ) {}
 
   get id(): string | undefined {
     return this.workflowId;
@@ -169,10 +172,22 @@ export class WorkflowMonitorClient {
   }
 
   private async readSettings(): Promise<ServerSettings> {
-    const parsed = JSON.parse(await fs.readFile(path.join(this.getUserDataDir(), CONFIG_FILE), "utf8")) as Partial<ServerSettings>;
+    const parsed = JSON.parse(await this.readSettingsFile()) as Partial<ServerSettings>;
     const serverUrl = String(parsed.serverUrl ?? "").trim().replace(/\/+$/, "");
     const token = String(parsed.token ?? "").trim();
     if (!serverUrl || !token) throw new Error("服务器地址或 Token 缺失");
     return { serverUrl, token };
+  }
+
+  private async readSettingsFile(): Promise<string> {
+    const scopedPath = getTaskScopedConfigPath(this.getUserDataDir(), this.taskId, CONFIG_FILE);
+    try {
+      return await fs.readFile(scopedPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+      return fs.readFile(getLegacyConfigPath(this.getUserDataDir(), CONFIG_FILE), "utf8");
+    }
   }
 }

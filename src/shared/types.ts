@@ -465,6 +465,7 @@ export interface AppApi {
   stopJob: (taskId: string) => Promise<BatchJobSnapshot>;
   retryFailures: (taskId: string) => Promise<BatchJobSnapshot>;
   getJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  disposeTask: (taskId: string) => Promise<void>;
   revealPath: (targetPath: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   checkForUpdates: () => Promise<UpdateSnapshot>;

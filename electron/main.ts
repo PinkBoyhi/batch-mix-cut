@@ -174,8 +174,8 @@ function getRuntimeKey(webContents: WebContents, taskId: string): string {
 
 function createTaskRuntime(webContents: WebContents, taskId: string): TaskRuntime {
   const jobManager = new JobManager();
-  const remoteMixClient = new RemoteMixClient(() => app.getPath("userData"));
-  const monitorClient = new WorkflowMonitorClient(() => app.getPath("userData"));
+  const remoteMixClient = new RemoteMixClient(() => app.getPath("userData"), taskId);
+  const monitorClient = new WorkflowMonitorClient(() => app.getPath("userData"), taskId);
   const runtime: TaskRuntime = { jobManager, remoteMixClient, monitorClient };
   taskRuntimes.set(getRuntimeKey(webContents, taskId), runtime);
   jobManager.on("update", (snapshot) => {
@@ -353,6 +353,15 @@ function registerIpc(): void {
   ipcMain.handle("job:stop", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.stop());
   ipcMain.handle("job:retry-failures", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.retryFailures());
   ipcMain.handle("job:get", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.getSnapshot());
+  ipcMain.handle("task:dispose", async (event, taskId: string) => {
+    const runtimeKey = getRuntimeKey(event.sender, taskId);
+    const runtime = taskRuntimes.get(runtimeKey);
+    if (!runtime) return;
+    if (isActiveMixSnapshot(runtime.jobManager.getSnapshot()) || isActiveMixSnapshot(runtime.remoteMixClient.getSnapshot())) {
+      throw new Error("任务仍在运行，不能关闭任务标签");
+    }
+    taskRuntimes.delete(runtimeKey);
+  });
 
   ipcMain.handle("shell:reveal-path", async (_event, targetPath: string) => {
     await shell.openPath(targetPath);

@@ -89,6 +89,38 @@ describe("toRemoteAsset", () => {
     }
   });
 
+  it("stores server settings independently for each task tab", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "remote-mix-client-"));
+    const server = http.createServer((request, response) => {
+      if (request.url === "/health") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 4, combinationPipelineVersion: 3 }));
+        return;
+      }
+      if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "task-a-token") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: false }));
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as AddressInfo).port;
+      const taskA = new RemoteMixClient(() => tempDir, "task-a");
+      const taskB = new RemoteMixClient(() => tempDir, "task-b");
+
+      await expect(taskA.saveSettings({ serverUrl: `http://127.0.0.1:${port}`, token: "task-a-token" })).resolves.toMatchObject({ ok: true });
+      await expect(taskA.getSettingsView()).resolves.toMatchObject({ serverUrl: `http://127.0.0.1:${port}`, hasToken: true });
+      await expect(taskB.getSettingsView()).resolves.toMatchObject({ serverUrl: "http://10.0.0.133:8787", hasToken: false });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a server that cannot guarantee opening clip rotation", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "remote-mix-client-"));
     const server = http.createServer((request, response) => {

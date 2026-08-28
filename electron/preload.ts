@@ -35,6 +35,7 @@ const api: AppApi = {
   stopJob: (taskId: string) => ipcRenderer.invoke("job:stop", taskId),
   retryFailures: (taskId: string) => ipcRenderer.invoke("job:retry-failures", taskId),
   getJob: (taskId: string) => ipcRenderer.invoke("job:get", taskId),
+  disposeTask: (taskId: string) => ipcRenderer.invoke("task:dispose", taskId),
   revealPath: (targetPath: string) => ipcRenderer.invoke("shell:reveal-path", targetPath),
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),

@@ -14,6 +14,7 @@ import type {
   RemoteMixSettingsView
 } from "../../src/shared/types.js";
 import { createCombinations } from "./combinator.js";
+import { getLegacyConfigPath, getTaskScopedConfigPath } from "./taskScopedConfig.js";
 import { WorkflowMonitorClient } from "./workflowMonitorClient.js";
 
 const CONFIG_FILE = "remote-mix-server.json";
@@ -57,7 +58,10 @@ export class RemoteMixClient extends EventEmitter {
   private stopped = false;
   private snapshot: BatchJobSnapshot = emptySnapshot();
 
-  constructor(private readonly getUserDataDir: () => string) {
+  constructor(
+    private readonly getUserDataDir: () => string,
+    private readonly taskId = "default"
+  ) {
     super();
   }
 
@@ -481,7 +485,7 @@ export class RemoteMixClient extends EventEmitter {
 
   private async readSettings(): Promise<StoredRemoteSettings> {
     try {
-      const raw = await fs.readFile(this.configPath(), "utf8");
+      const raw = await this.readSettingsFile();
       const parsed = JSON.parse(raw) as StoredRemoteSettings;
       return {
         serverUrl: normalizeServerUrl(parsed.serverUrl || DEFAULT_SERVER_URL),
@@ -501,7 +505,22 @@ export class RemoteMixClient extends EventEmitter {
   }
 
   private configPath(): string {
-    return path.join(this.getUserDataDir(), CONFIG_FILE);
+    return getTaskScopedConfigPath(this.getUserDataDir(), this.taskId, CONFIG_FILE);
+  }
+
+  private legacyConfigPath(): string {
+    return getLegacyConfigPath(this.getUserDataDir(), CONFIG_FILE);
+  }
+
+  private async readSettingsFile(): Promise<string> {
+    try {
+      return await fs.readFile(this.configPath(), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+      return fs.readFile(this.legacyConfigPath(), "utf8");
+    }
   }
 }
 
