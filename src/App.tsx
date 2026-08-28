@@ -310,11 +310,11 @@ function TaskWorkspace({
   useEffect(() => {
     if (!api) return;
     return api.onJobUpdate((update) => {
-      if (update.taskId === taskId) {
+      if (update.taskId === taskId && update.executionTarget === activeMixExecutionTarget) {
         setJob(update.snapshot);
       }
     });
-  }, [api, taskId]);
+  }, [activeMixExecutionTarget, api, taskId]);
 
   useEffect(() => {
     if (!api) return;
@@ -1672,7 +1672,11 @@ function TaskWorkspace({
             </button>
             <button
               type="button"
-              onClick={() => void (api ? runAction(() => api.retryFailures(taskId)) : undefined)}
+              onClick={() =>
+                void (api
+                  ? runAction(() => (activeMixExecutionTarget === "server" ? api.retryRemoteFailures(taskId) : api.retryFailures(taskId)))
+                  : undefined)
+              }
               disabled={job.failures.length === 0 || job.status === "running"}
               title="重试失败"
             >

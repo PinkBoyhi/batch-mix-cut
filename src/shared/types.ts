@@ -219,6 +219,7 @@ export interface WorkflowPatchInput {
 
 export interface TaskJobUpdate {
   taskId: string;
+  executionTarget: MixExecutionTarget;
   snapshot: BatchJobSnapshot;
 }
 
@@ -454,6 +455,7 @@ export interface AppApi {
   pauseRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
   resumeRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
   stopRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
+  retryRemoteFailures: (taskId: string) => Promise<BatchJobSnapshot>;
   getRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
   getRemoteMixSettings: (taskId: string) => Promise<RemoteMixSettingsView>;
   saveRemoteMixSettings: (taskId: string, settings: RemoteMixSettings) => Promise<RemoteMixSettingsView>;

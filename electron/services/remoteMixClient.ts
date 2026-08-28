@@ -18,7 +18,7 @@ import { WorkflowMonitorClient } from "./workflowMonitorClient.js";
 
 const CONFIG_FILE = "remote-mix-server.json";
 const DEFAULT_SERVER_URL = "http://10.0.0.133:8787";
-const MIN_SERVER_AUDIO_PIPELINE_VERSION = 3;
+const MIN_SERVER_AUDIO_PIPELINE_VERSION = 4;
 const MIN_SERVER_COMBINATION_PIPELINE_VERSION = 3;
 const REQUEST_TIMEOUT_MS = 20_000;
 const TRANSFER_RETRY_ATTEMPTS = 3;
@@ -51,6 +51,8 @@ interface RemoteOutputsResponse {
 export class RemoteMixClient extends EventEmitter {
   private currentJobId?: string;
   private currentConfig?: MixProjectConfig;
+  private originalConfig?: MixProjectConfig;
+  private monitor?: WorkflowMonitorClient;
   private currentSettings?: StoredRemoteSettings;
   private stopped = false;
   private snapshot: BatchJobSnapshot = emptySnapshot();
@@ -136,6 +138,8 @@ export class RemoteMixClient extends EventEmitter {
 
     this.stopped = false;
     this.currentSettings = settings;
+    this.originalConfig = config;
+    this.monitor = monitor;
     const projectId = `desktop-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
     const remoteConfig = await this.uploadProjectAssets(
       settings,
@@ -173,6 +177,29 @@ export class RemoteMixClient extends EventEmitter {
   async stop(): Promise<BatchJobSnapshot> {
     this.stopped = true;
     return this.forwardJobAction("stop");
+  }
+
+  async retryFailures(): Promise<BatchJobSnapshot> {
+    const settings = this.currentSettings ?? (await this.readSettings());
+    if (!this.currentJobId || !this.originalConfig) {
+      return this.snapshot;
+    }
+    this.stopped = false;
+    const response = await this.requestJson<{ ok: boolean; snapshot: BatchJobSnapshot }>(
+      settings,
+      "POST",
+      `/api/jobs/${encodeURIComponent(this.currentJobId)}/retry`
+    );
+    this.emitSnapshot(response.snapshot);
+    void this.pollUntilDone(settings, this.originalConfig, this.monitor).catch((error) => {
+      this.emitSnapshot({
+        ...this.snapshot,
+        status: "failed",
+        message: `服务器失败项重试失败：${toErrorMessage(error)}`,
+        finishedAt: new Date().toISOString()
+      });
+    });
+    return this.snapshot;
   }
 
   getSnapshot(): BatchJobSnapshot {

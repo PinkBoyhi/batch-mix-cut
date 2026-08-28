@@ -165,7 +165,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
           resolve();
           return;
         }
-        reject(new Error(stderr.trim() || `FFmpeg 退出码 ${code}`));
+        reject(new Error(summarizeFfmpegFailure(stderr, `FFmpeg 退出码 ${code}`)));
       });
     });
 
@@ -421,8 +421,7 @@ function measureVolume(filePath: string): Promise<VolumeStats> {
 }
 
 async function repairQuietAudioIfNeeded(filePath: string): Promise<VolumeStats> {
-  loudnessCache.delete(filePath);
-  const stats = await measureVolume(filePath);
+  const stats = await measureStableOutputVolume(filePath);
   if (!shouldRepairQuietAudio(stats)) {
     return stats;
   }
@@ -442,6 +441,21 @@ async function repairQuietAudioIfNeeded(filePath: string): Promise<VolumeStats> 
     await fs.unlink(tempPath).catch(() => undefined);
     throw error;
   }
+}
+
+async function measureStableOutputVolume(filePath: string): Promise<VolumeStats> {
+  let stats: VolumeStats = {};
+  // Large MP4 files can still be settling on a local or network disk just after
+  // FFmpeg exits. Re-probe before reporting a false "silent" failure.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    loudnessCache.delete(filePath);
+    stats = await measureVolume(filePath);
+    if (!isProbablySilent(stats) || attempt === 2) {
+      return stats;
+    }
+    await wait(300);
+  }
+  return stats;
 }
 
 function assertExpectedAudioIsAudible(
@@ -502,7 +516,7 @@ function runAudioRepair(inputPath: string, outputPath: string, gainDb: number): 
         resolve();
         return;
       }
-      reject(new Error(stderr.trim() || `FFmpeg 音频修复退出码 ${code}`));
+      reject(new Error(summarizeFfmpegFailure(stderr, `FFmpeg 音频修复退出码 ${code}`)));
     });
   });
 }
@@ -546,6 +560,19 @@ function buildFinalAudioFilterChain(): string {
 function formatStereoDelay(delayMs: number): string {
   const safeDelay = Math.max(0, Math.round(delayMs));
   return `${safeDelay}|${safeDelay}`;
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function summarizeFfmpegFailure(stderr: string, fallback: string): string {
+  const lines = stderr.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const errors = lines.filter((line) =>
+    /(error|failed|invalid|conversion failed|could not|unable to|no such file)/i.test(line) &&
+    !/non-monotonous dts/i.test(line)
+  );
+  return errors.slice(-6).join("\n") || lines.slice(-8).join("\n") || fallback;
 }
 
 function evenDimension(value: number): number {

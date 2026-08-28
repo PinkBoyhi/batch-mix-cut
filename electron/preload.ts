@@ -25,6 +25,7 @@ const api: AppApi = {
   pauseRemoteJob: (taskId: string) => ipcRenderer.invoke("remote:pause", taskId),
   resumeRemoteJob: (taskId: string) => ipcRenderer.invoke("remote:resume", taskId),
   stopRemoteJob: (taskId: string) => ipcRenderer.invoke("remote:stop", taskId),
+  retryRemoteFailures: (taskId: string) => ipcRenderer.invoke("remote:retry", taskId),
   getRemoteJob: (taskId: string) => ipcRenderer.invoke("remote:get", taskId),
   getRemoteMixSettings: (taskId: string) => ipcRenderer.invoke("remote:get-settings", taskId),
   saveRemoteMixSettings: (taskId, settings) => ipcRenderer.invoke("remote:save-settings", taskId, settings),

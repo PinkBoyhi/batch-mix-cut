@@ -27,6 +27,7 @@ import { assetId, isVideoFile, naturalCompare } from "./utils/path.js";
 import type {
   AssetKind,
   AssetInfo,
+  BatchJobSnapshot,
   CloudImportVideo,
   CloudImportJob,
   CloudLocalUploadVideo,
@@ -179,7 +180,7 @@ function createTaskRuntime(webContents: WebContents, taskId: string): TaskRuntim
   taskRuntimes.set(getRuntimeKey(webContents, taskId), runtime);
   jobManager.on("update", (snapshot) => {
     if (!webContents.isDestroyed()) {
-      webContents.send("job:update", { taskId, snapshot });
+      webContents.send("job:update", { taskId, executionTarget: "local", snapshot });
     }
     if (runtime.currentConfig) {
       void monitorClient.reportLocalJob(snapshot, runtime.currentConfig);
@@ -187,7 +188,7 @@ function createTaskRuntime(webContents: WebContents, taskId: string): TaskRuntim
   });
   remoteMixClient.on("update", (snapshot) => {
     if (!webContents.isDestroyed()) {
-      webContents.send("job:update", { taskId, snapshot });
+      webContents.send("job:update", { taskId, executionTarget: "server", snapshot });
     }
   });
   return runtime;
@@ -308,6 +309,9 @@ function registerIpc(): void {
 
   ipcMain.handle("job:start", async (event, taskId: string, config: MixProjectConfig) => {
     const runtime = getTaskRuntime(event, taskId);
+    if (isActiveMixSnapshot(runtime.remoteMixClient.getSnapshot())) {
+      throw new Error("当前标签正在服务器混剪，请完成或停止后再切换到本地混剪。");
+    }
     runtime.currentConfig = config;
     const monitorStart = getCurrentWorkflowUploader().then((uploader) => runtime.monitorClient.start(taskId, config, "local", uploader));
     const snapshot = await runtime.jobManager.start(config);
@@ -320,6 +324,9 @@ function registerIpc(): void {
   ipcMain.handle("remote:test-server", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.testConnection());
   ipcMain.handle("remote:start", async (event, taskId: string, config: MixProjectConfig) => {
     const runtime = getTaskRuntime(event, taskId);
+    if (isActiveMixSnapshot(runtime.jobManager.getSnapshot())) {
+      throw new Error("当前标签正在本地混剪，请完成或停止后再切换到服务器混剪。");
+    }
     runtime.currentConfig = config;
     await runtime.monitorClient.start(taskId, config, "server", await getCurrentWorkflowUploader());
     try {
@@ -339,6 +346,7 @@ function registerIpc(): void {
   ipcMain.handle("remote:pause", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.pause());
   ipcMain.handle("remote:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.resume());
   ipcMain.handle("remote:stop", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.stop());
+  ipcMain.handle("remote:retry", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.retryFailures());
   ipcMain.handle("remote:get", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.getSnapshot());
   ipcMain.handle("job:pause", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.pause());
   ipcMain.handle("job:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.resume());
@@ -443,6 +451,10 @@ function registerIpc(): void {
   ipcMain.handle("cloud:query-import-result", async (_event, requestId: string, pageNo = 1, pageSize = 20) => {
     return cloudClient.queryImportResult(requestId, pageNo, pageSize);
   });
+}
+
+function isActiveMixSnapshot(snapshot: BatchJobSnapshot): boolean {
+  return ["queued", "running", "paused", "stopping"].includes(snapshot.status);
 }
 
 async function ensureCloudWorkflow(runtime: TaskRuntime, taskId: string, videoNames: string[]): Promise<void> {

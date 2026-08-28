@@ -45,7 +45,7 @@ const minFreeBytes = Math.max(1, Number(process.env.MIX_SERVER_MIN_FREE_GB ?? "3
 const projectRetentionHours = readNonNegativeNumber(process.env.MIX_SERVER_PROJECT_RETENTION_HOURS, 24);
 const projectCleanupIntervalMs = 60 * 60 * 1000;
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
-const audioPipelineVersion = 3;
+const audioPipelineVersion = 4;
 const combinationPipelineVersion = 3;
 const jobs = new Map<string, ServerJob>();
 const workflowStore = new WorkflowStore(workspaceRoot);
@@ -302,6 +302,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         return;
       }
       job.snapshot = await job.manager.stop();
+      sendJson(response, 200, { ok: true, snapshot: job.snapshot });
+      return;
+    }
+
+    if (request.method === "POST" && action === "retry") {
+      if (!job.started) {
+        sendJson(response, 409, { ok: false, error: "服务器任务尚未开始，暂时不能重试" });
+        return;
+      }
+      job.snapshot = await job.manager.retryFailures();
       sendJson(response, 200, { ok: true, snapshot: job.snapshot });
       return;
     }
