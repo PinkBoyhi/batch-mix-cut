@@ -421,12 +421,22 @@ function registerIpc(): void {
       const result = await cloudClient.uploadLocalVideos(videos, (progress) => {
         const currentVideo = videoStates[progress.index];
         if (currentVideo) {
-          currentVideo.status = progress.phase === "uploaded" ? "processing" : "uploading";
-          currentVideo.message = progress.phase === "preparing" ? "正在准备上传" : progress.phase === "uploaded" ? "上传完成，等待提交" : "正在上传";
+          currentVideo.status = progress.phase === "uploaded"
+            ? "processing"
+            : progress.phase === "failed"
+              ? "failed"
+              : "uploading";
+          currentVideo.message = progress.message ?? (progress.phase === "preparing"
+            ? "正在准备上传"
+            : progress.phase === "uploaded"
+              ? "上传完成，等待提交"
+              : progress.phase === "failed"
+                ? "上传失败，等待重试"
+                : "正在上传");
           currentVideo.bytesUploaded = progress.bytesUploaded;
           currentVideo.bytesTotal = progress.bytesTotal;
         }
-        const completed = progress.phase === "uploaded" ? progress.index + 1 : progress.index;
+        const completed = ["uploaded", "failed"].includes(progress.phase) ? progress.index + 1 : progress.index;
         const update: CloudUploadProgress = {
           taskId,
           stage: progress.phase === "submitting" ? "processing" : "uploading",
@@ -450,7 +460,21 @@ function registerIpc(): void {
           videos: structuredClone(videoStates)
         }, progress.phase === "uploading");
       });
-      startCloudResultMonitor(event.sender, taskId, runtime, videoNames, result.importJob);
+      if (result.importJob) {
+        startCloudResultMonitor(event.sender, taskId, runtime, result.uploaded.map((video) => video.videoName), result.importJob);
+      } else {
+        const message = result.submissionError ?? "成片已上传，但未能提交云管家导入";
+        await runtime.monitorClient.update({
+          stage: "attention",
+          status: "attention",
+          error: message,
+          progress: { current: result.uploaded.length, total: videos.length, unit: "videos", message },
+          totalVideos: videos.length,
+          succeededVideos: result.uploaded.length,
+          failedVideos: result.skipped?.length ?? 0,
+          videos: structuredClone(videoStates)
+        });
+      }
       return result;
     } catch (error) {
       await reportCloudFailure(event.sender, taskId, runtime, error, videoStates);
@@ -536,6 +560,7 @@ function startCloudResultMonitor(
       if (!webContents.isDestroyed()) {
         webContents.send("cloud:progress", {
           taskId,
+          requestId: importJob.requestId,
           stage: update.status === "processing" ? "processing" : update.status === "attention" ? "attention" : update.status === "failed" ? "failed" : "completed",
           current: update.succeeded + update.failed,
           total: videoNames.length,

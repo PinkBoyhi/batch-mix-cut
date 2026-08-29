@@ -29,6 +29,7 @@ import type {
   CloudImportJob,
   CloudImportResult,
   CloudImportVideo,
+  CloudLocalUploadJob,
   CloudNameMode,
   CloudLocalUploadVideo,
   CloudPublishMode,
@@ -104,6 +105,8 @@ interface CloudImportRow {
   videoName: string;
   url: string;
   thirdId: string;
+  submitted?: boolean;
+  uploadError?: string;
 }
 
 interface CloudBatchProgress {
@@ -295,6 +298,7 @@ function TaskWorkspace({
   const [cloudImportRequestId, setCloudImportRequestId] = useState("");
   const [cloudImportRequestIds, setCloudImportRequestIds] = useState<string[]>([]);
   const [cloudImportResults, setCloudImportResults] = useState<CloudImportResult[]>([]);
+  const [cloudRowsJobId, setCloudRowsJobId] = useState<string | undefined>();
   const [cloudBatchProgress, setCloudBatchProgress] = useState<CloudBatchProgress | undefined>();
   const [cloudPublishProfiles, setCloudPublishProfiles] = useState<CloudPublishProfile[]>([]);
   const [selectedCloudPublishProfileId, setSelectedCloudPublishProfileId] = useState("");
@@ -323,12 +327,12 @@ function TaskWorkspace({
       if (update.taskId !== taskId) return;
       setCloudStatus(formatCloudBatchProgress(update.message, cloudBatchProgress));
       if (update.videos) {
-        setCloudImportResults(update.videos.map((video) => ({
+        setCloudImportResults((current) => mergeCloudImportResults(current, update.videos!.map((video) => ({
           videoId: video.videoId,
           videoName: video.videoName,
           status: video.status === "success" ? 10 : video.status === "failed" ? 20 : video.status === "processing" ? 3 : 0,
           msg: video.message
-        })));
+        }))));
       }
     });
   }, [api, cloudBatchProgress, taskId]);
@@ -392,8 +396,12 @@ function TaskWorkspace({
     const completedCombinations = combinations.filter((combination) => !failedCombinationIds.has(combination.id));
     const skippedCombinationCount = combinations.length - completedCombinations.length;
     const skippedSummary = skippedCombinationCount > 0 ? `；已跳过 ${skippedCombinationCount} 个失败组合` : "";
-    const rows = buildCloudImportRows(completedCombinations, cloudPublicUrlPrefix);
-    setCloudImportRows(rows);
+    const generatedRows = buildCloudImportRows(completedCombinations, cloudPublicUrlPrefix);
+    const rows = cloudRowsJobId === job.id ? cloudImportRows : generatedRows;
+    if (cloudRowsJobId !== job.id) {
+      setCloudRowsJobId(job.id);
+      setCloudImportRows(generatedRows);
+    }
     if (config.exportMode === "draft") {
       setCloudStatus(`混剪已完成，但当前只导出剪映草稿，没有可发布的 MP4${skippedSummary}`);
       return;
@@ -441,6 +449,8 @@ function TaskWorkspace({
     cloudImportMeta.videoRight,
     cloudImportMeta.videoType,
     cloudPublicUrlPrefix,
+    cloudImportRows,
+    cloudRowsJobId,
     cloudSettings.hasUploadToken,
     cloudSyncEnabled,
     cloudUserReady,
@@ -671,6 +681,7 @@ function TaskWorkspace({
       setCloudImportRequestIds([]);
       setCloudImportResults([]);
       setCloudBatchProgress(undefined);
+      setCloudRowsJobId(undefined);
       setAutoCloudImportJobId(undefined);
       setActiveMixExecutionTarget(mixExecutionTarget);
       setJob(mixExecutionTarget === "server" ? await api.startRemoteJob(taskId, config) : await api.startJob(taskId, config));
@@ -1189,14 +1200,34 @@ function TaskWorkspace({
         completedVideos += sourceBatch.length;
         uploaded.push(...result.uploaded);
         skipped.push(...(result.skipped ?? []));
-        importJobs.push(result.importJob);
-        rememberCloudImportRequest(result.importJob.requestId);
+        if (result.importJob) {
+          importJobs.push(result.importJob);
+          rememberCloudImportRequest(result.importJob.requestId);
+        }
+        const rejectedUploads = rejectedCloudUploadPaths(result);
+        const skippedUploads = new Map((result.skipped ?? []).map((item) => [item.localPath, item.reason]));
         setCloudImportRows((currentRows) =>
           currentRows.map((row) => {
             const uploadedItem = result.uploaded.find((item) => item.localPath === row.localPath);
-            return uploadedItem ? { ...row, url: uploadedItem.url } : row;
+            if (uploadedItem) {
+              return {
+                ...row,
+                url: uploadedItem.url,
+                submitted: !rejectedUploads.has(uploadedItem.localPath),
+                uploadError: rejectedUploads.get(uploadedItem.localPath)
+              };
+            }
+            const uploadError = skippedUploads.get(row.localPath);
+            return uploadError ? { ...row, submitted: false, uploadError } : row;
           })
         );
+
+        if (!result.importJob) {
+          setCloudStatus(
+            `第 ${batchIndex + 1}/${batches.length} 批没有完成导入：${result.submissionError ?? "请检查上传结果"}。已成功直传的文件会保留 URL，重新点击发布只会补传未完成项。`
+          );
+          return false;
+        }
 
         const rejectedLabelIds = findRejectedCloudLabelIds(result.importJob.errorList);
         if (rejectedLabelIds.length > 0) {
@@ -1233,7 +1264,7 @@ function TaskWorkspace({
       await openLocalExports();
       return;
     }
-    const publicUrlRows = cloudImportRows.filter((row) => row.url.trim());
+    const publicUrlRows = cloudImportRows.filter((row) => row.url.trim() && !row.submitted);
     const localUploadRows = cloudImportRows.filter((row) => !row.url.trim());
     if (localUploadRows.length > 0 && !cloudSettings.hasUploadToken) {
       setCloudStatus("发布失败：缺少云管家上传授权，无法直传本地 mp4。请在云管家登录里点击自动获取上传授权，或给每条视频填公网 URL 后导入。");
@@ -1247,7 +1278,7 @@ function TaskWorkspace({
       return;
     }
     if (publicUrlRows.length === 0 && localUploadRows.length === 0) {
-      setCloudStatus("没有待发布的视频");
+      setCloudStatus("所有视频都已提交云管家；可点击“查询结果”查看处理状态。");
       return;
     }
     if (keepConfigForNext) {
@@ -1338,6 +1369,15 @@ function TaskWorkspace({
         completedVideos += sourceBatch.length;
         importJobs.push(result);
         rememberCloudImportRequest(result.requestId);
+        const rejectedRows = rejectedCloudImportPaths(sourceBatch, result);
+        setCloudImportRows((currentRows) => currentRows.map((row) => {
+          if (!sourceBatch.some((video) => video.localPath === row.localPath)) return row;
+          return {
+            ...row,
+            submitted: !rejectedRows.has(row.localPath),
+            uploadError: rejectedRows.get(row.localPath)
+          };
+        }));
 
         const rejectedLabelIds = findRejectedCloudLabelIds(result.errorList);
         if (rejectedLabelIds.length > 0) {
@@ -1386,7 +1426,9 @@ function TaskWorkspace({
   }
 
   function patchCloudImportRow(index: number, patch: Partial<CloudImportRow>) {
-    setCloudImportRows((rows) => rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)));
+    setCloudImportRows((rows) => rows.map((row, rowIndex) => (
+      rowIndex === index ? { ...row, ...patch, submitted: false, uploadError: undefined } : row
+    )));
   }
 
   function fillCloudUrlsFromPrefix() {
@@ -1403,7 +1445,9 @@ function TaskWorkspace({
       setCloudStatus("请先粘贴公网 URL");
       return;
     }
-    setCloudImportRows((rows) => rows.map((row, index) => ({ ...row, url: urls[index] ?? row.url })));
+    setCloudImportRows((rows) => rows.map((row, index) => (
+      urls[index] ? { ...row, url: urls[index], submitted: false, uploadError: undefined } : row
+    )));
     setCloudStatus(`已填入 ${Math.min(urls.length, cloudImportRows.length)} 个公网 URL`);
   }
 
@@ -2902,6 +2946,7 @@ function CloudImportTable({
             <th>队列名称</th>
             <th>最终发布名称</th>
             <th>上传/导入 URL</th>
+            <th>状态</th>
             <th>第三方 ID</th>
           </tr>
         </thead>
@@ -2926,6 +2971,9 @@ function CloudImportTable({
                   placeholder="直传成功后自动填入；或手动填公网 URL"
                   onChange={(event) => onPatch(index, { url: event.target.value })}
                 />
+              </td>
+              <td title={row.uploadError}>
+                {row.submitted ? "已提交" : row.uploadError ? "待重试" : row.url ? "待导入" : "待上传"}
               </td>
               <td>
                 <input value={row.thirdId} onChange={(event) => onPatch(index, { thirdId: event.target.value })} />
@@ -3179,7 +3227,37 @@ function buildCloudImportRows(combinations: MixCombination[], publicUrlPrefix: s
 }
 
 function formatSkippedUploadSummary(skipped?: Array<{ reason: string }>): string {
-  return skipped?.length ? `；已跳过 ${skipped.length} 个未生成成片` : "";
+  return skipped?.length ? `；有 ${skipped.length} 个文件待重试` : "";
+}
+
+function mergeCloudImportResults(current: CloudImportResult[], incoming: CloudImportResult[]): CloudImportResult[] {
+  const byName = new Map(current.map((result) => [result.videoName, result]));
+  for (const result of incoming) {
+    byName.set(result.videoName, result);
+  }
+  return [...byName.values()];
+}
+
+function rejectedCloudUploadPaths(result: CloudLocalUploadJob): Map<string, string> {
+  if (!result.importJob) return new Map();
+  return rejectedCloudImportPaths(
+    result.uploaded.map((item) => ({ localPath: item.localPath, videoName: item.videoName })),
+    result.importJob
+  );
+}
+
+function rejectedCloudImportPaths(
+  videos: Array<{ localPath?: string; videoName: string }>,
+  importJob: CloudImportJob
+): Map<string, string> {
+  const rejected = new Map<string, string>();
+  for (const error of importJob.errorList) {
+    const video = videos[error.index];
+    if (!video?.localPath) continue;
+    const message = error.errors?.map((item) => item.message).filter(Boolean).join("、") || "云管家拒绝导入";
+    rejected.set(video.localPath, message);
+  }
+  return rejected;
 }
 
 function createCloudBatchProgress(
@@ -3271,7 +3349,9 @@ function mergeCloudImportRows(currentRows: CloudImportRow[], incomingRows: Cloud
 function buildCloudImportRowsFromRows(rows: CloudImportRow[], publicUrlPrefix: string): CloudImportRow[] {
   return rows.map((row) => ({
     ...row,
-    url: publicUrlPrefix.trim() ? joinPublicUrl(publicUrlPrefix, basename(row.localPath)) : row.url
+    url: publicUrlPrefix.trim() ? joinPublicUrl(publicUrlPrefix, basename(row.localPath)) : row.url,
+    submitted: publicUrlPrefix.trim() ? false : row.submitted,
+    uploadError: publicUrlPrefix.trim() ? undefined : row.uploadError
   }));
 }
 

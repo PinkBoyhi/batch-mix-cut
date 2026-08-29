@@ -26,6 +26,9 @@ import { describeMissingBinary, getFfmpegPath } from "./ffmpegBinaries.js";
 
 const CONFIG_FILE = "yunguanjia-cloud.json";
 const TOKEN_REFRESH_SKEW_MS = 10 * 60 * 1000;
+const LOCAL_UPLOAD_RETRY_ATTEMPTS = 3;
+const LOCAL_UPLOAD_RETRY_DELAY_MS = 1_000;
+const LOCAL_UPLOAD_SOCKET_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_OPEN_API_BASE_URL = decodeDefault([104, 116, 116, 112, 115, 58, 47, 47, 115, 117, 99, 97, 105, 119, 97, 110, 103, 45, 111, 112, 101, 110, 45, 97, 112, 105, 46, 115, 117, 99, 97, 105, 99, 108, 111, 117, 100, 46, 99, 111, 109]);
 const DEFAULT_COMPANY_KEY = decodeDefault([102, 49, 51, 98, 56, 50, 97, 53, 102, 101, 50, 98, 53, 53, 53, 102, 57, 56, 57, 101, 97, 57, 54, 50, 50, 48, 49, 49, 55, 49, 55, 57]);
 const DEFAULT_COMPANY_SECRET = decodeDefault([71, 79, 67, 115, 100, 103, 99, 52, 66, 48, 97, 54, 97, 79, 84, 108, 49, 97, 89, 66, 86, 107, 83, 119, 56, 73, 90, 106, 105, 100, 76, 75, 99, 55, 76, 104, 53, 49, 107, 111]);
@@ -46,9 +49,10 @@ export interface CloudUploadProgressEvent {
   index: number;
   total: number;
   videoName: string;
-  phase: "preparing" | "uploading" | "uploaded" | "submitting";
+  phase: "preparing" | "uploading" | "uploaded" | "failed" | "submitting";
   bytesUploaded?: number;
   bytesTotal?: number;
+  message?: string;
 }
 
 interface CloudResponse<T> {
@@ -205,31 +209,27 @@ export class YunguanjiaClient {
     }
 
     const uploaded: CloudLocalUploadJob["uploaded"] = [];
+    const skipped: NonNullable<CloudLocalUploadJob["skipped"]> = [];
     for (const [index, video] of videos.entries()) {
       onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "preparing" });
-      if (!video.localPath.trim()) {
-        throw new Error(`第 ${index + 1} 个视频缺少本地文件路径`);
+      const validationError = validateLocalUploadVideo(video, index);
+      if (validationError) {
+        skipped.push({ localPath: video.localPath, videoName: video.videoName, reason: validationError });
+        onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "failed", message: validationError });
+        continue;
       }
-      if (!video.videoName.trim()) {
-        throw new Error(`第 ${index + 1} 个视频缺少视频名称`);
-      }
-      if (!Number.isFinite(video.twoLevelTypeId) || video.twoLevelTypeId <= 0) {
-        throw new Error(`第 ${index + 1} 个视频缺少二级分类 ID`);
-      }
-      if (!video.labelIds.trim()) {
-        throw new Error(`第 ${index + 1} 个视频缺少标签 ID`);
-      }
-      const uploadPath = await this.prepareUploadFile(video);
+      let uploadPath = video.localPath;
       try {
-        const url = await this.uploadLocalFileByWebApi(settings, uploadPath, (bytesUploaded, bytesTotal) => {
+        uploadPath = await this.prepareUploadFile(video);
+        const url = await retryLocalUpload(() => this.uploadLocalFileByWebApi(settings, uploadPath, (bytesUploaded, bytesTotal) => {
           onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "uploading", bytesUploaded, bytesTotal });
-        });
-        uploaded.push({
-          localPath: video.localPath,
-          videoName: video.videoName,
-          url
-        });
+        }));
+        uploaded.push({ localPath: video.localPath, videoName: video.videoName, url });
         onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "uploaded" });
+      } catch (error) {
+        const reason = toErrorMessage(error);
+        skipped.push({ localPath: video.localPath, videoName: video.videoName, reason });
+        onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "failed", message: reason });
       } finally {
         if (uploadPath !== video.localPath) {
           await fs.unlink(uploadPath).catch(() => undefined);
@@ -237,21 +237,33 @@ export class YunguanjiaClient {
       }
     }
 
-    onProgress?.({ index: videos.length, total: videos.length, videoName: "", phase: "submitting" });
+    if (uploaded.length === 0) {
+      return {
+        uploaded,
+        skipped,
+        submissionError: `本批 ${videos.length} 个视频均未上传成功：${skipped[0]?.reason ?? "请检查网络和上传授权"}`
+      };
+    }
 
-    const importJob = await this.importVideos(
-      videos.map((video, index) => ({
+    onProgress?.({ index: videos.length, total: videos.length, videoName: "", phase: "submitting" });
+    const uploadedUrls = new Map(uploaded.map((item) => [item.localPath, item.url]));
+    const importPayload = videos
+      .filter((video) => uploadedUrls.has(video.localPath))
+      .map((video) => ({
         localPath: video.localPath,
         videoName: video.videoName,
         videoType: video.videoType,
         twoLevelTypeId: video.twoLevelTypeId,
         labelIds: video.labelIds,
         videoRight: video.videoRight,
-        url: uploaded[index]?.url ?? ""
-      }))
-    );
-
-    return { uploaded, importJob };
+        url: uploadedUrls.get(video.localPath) ?? ""
+      }));
+    try {
+      const importJob = await this.importVideos(importPayload);
+      return { uploaded, skipped, importJob };
+    } catch (error) {
+      return { uploaded, skipped, submissionError: toErrorMessage(error) };
+    }
   }
 
   private async prepareUploadFile(video: CloudLocalUploadVideo): Promise<string> {
@@ -700,6 +712,9 @@ async function postMultipartFile(
         });
       }
     );
+    request.setTimeout(LOCAL_UPLOAD_SOCKET_TIMEOUT_MS, () => {
+      request.destroy(new Error("云管家上传连接长时间无响应"));
+    });
     request.on("error", reject);
     for (const buffer of fieldBuffers) {
       request.write(buffer);
@@ -715,6 +730,42 @@ async function postMultipartFile(
     stream.on("end", () => request.end(trailer));
     stream.pipe(request, { end: false });
   });
+}
+
+function validateLocalUploadVideo(video: CloudLocalUploadVideo, index: number): string | undefined {
+  if (!video.localPath.trim()) return `第 ${index + 1} 个视频缺少本地文件路径`;
+  if (!video.videoName.trim()) return `第 ${index + 1} 个视频缺少视频名称`;
+  if (!Number.isFinite(video.twoLevelTypeId) || video.twoLevelTypeId <= 0) return `第 ${index + 1} 个视频缺少二级分类 ID`;
+  if (!video.labelIds.trim()) return `第 ${index + 1} 个视频缺少标签 ID`;
+  return undefined;
+}
+
+async function retryLocalUpload<T>(operation: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= LOCAL_UPLOAD_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= LOCAL_UPLOAD_RETRY_ATTEMPTS || !isRetryableLocalUploadError(error)) {
+        throw error;
+      }
+      await delay(LOCAL_UPLOAD_RETRY_DELAY_MS * attempt);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("云管家本地文件上传失败");
+}
+
+function isRetryableLocalUploadError(error: unknown): boolean {
+  return !/本地视频不存在|不是可上传的视频文件|上传授权已失效|登录状态已失效/.test(toErrorMessage(error));
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function postWebApi<T>(url: string, token: string, body: Record<string, string | number | boolean>): Promise<T> {

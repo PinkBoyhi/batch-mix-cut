@@ -86,6 +86,69 @@ describe("YunguanjiaClient", () => {
     ).rejects.toThrow("本地成片直传需要云管家上传授权");
   });
 
+  it("keeps uploading the remaining files when one local file fails", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "yunguanjia-test-"));
+    const client = new YunguanjiaClient(() => dir);
+    await client.saveSettings({
+      baseUrl: "https://api.example.com/",
+      companyKey: "company",
+      companySecret: "secret",
+      accountKey: "account-key",
+      uploadToken: "web-upload-token"
+    });
+    const internalClient = client as unknown as {
+      uploadLocalFileByWebApi: (_settings: unknown, localPath: string) => Promise<string>;
+    };
+    const upload = vi.spyOn(internalClient, "uploadLocalFileByWebApi").mockImplementation(async (_settings, localPath) => {
+      if (localPath.endsWith("broken.mp4")) {
+        throw new Error("本地视频不存在：broken.mp4");
+      }
+      return `https://cdn.example.com/${path.basename(localPath)}`;
+    });
+    const submit = vi.spyOn(client, "importVideos").mockResolvedValue({ requestId: "request-1", errorList: [] });
+    const progress: string[] = [];
+
+    const result = await client.uploadLocalVideos([
+      { localPath: "/tmp/first.mp4", videoName: "first", videoType: 0, twoLevelTypeId: 1, labelIds: "2", videoRight: 0 },
+      { localPath: "/tmp/broken.mp4", videoName: "broken", videoType: 0, twoLevelTypeId: 1, labelIds: "2", videoRight: 0 },
+      { localPath: "/tmp/last.mp4", videoName: "last", videoType: 0, twoLevelTypeId: 1, labelIds: "2", videoRight: 0 }
+    ], (event) => progress.push(`${event.videoName}:${event.phase}`));
+
+    expect(upload).toHaveBeenCalledTimes(3);
+    expect(result.uploaded.map((item) => item.videoName)).toEqual(["first", "last"]);
+    expect(result.skipped).toEqual([{ localPath: "/tmp/broken.mp4", videoName: "broken", reason: "本地视频不存在：broken.mp4" }]);
+    expect(submit).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ videoName: "first" }),
+      expect.objectContaining({ videoName: "last" })
+    ]));
+    expect(progress).toContain("broken:failed");
+  });
+
+  it("keeps uploaded URLs when cloud import cannot be submitted", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "yunguanjia-test-"));
+    const client = new YunguanjiaClient(() => dir);
+    await client.saveSettings({
+      baseUrl: "https://api.example.com/",
+      companyKey: "company",
+      companySecret: "secret",
+      accountKey: "account-key",
+      uploadToken: "web-upload-token"
+    });
+    const internalClient = client as unknown as {
+      uploadLocalFileByWebApi: (_settings: unknown, localPath: string) => Promise<string>;
+    };
+    vi.spyOn(internalClient, "uploadLocalFileByWebApi").mockResolvedValue("https://cdn.example.com/output.mp4");
+    vi.spyOn(client, "importVideos").mockRejectedValue(new Error("云管家导入请求超时"));
+
+    const result = await client.uploadLocalVideos([
+      { localPath: "/tmp/output.mp4", videoName: "output", videoType: 0, twoLevelTypeId: 1, labelIds: "2", videoRight: 0 }
+    ]);
+
+    expect(result.uploaded).toEqual([{ localPath: "/tmp/output.mp4", videoName: "output", url: "https://cdn.example.com/output.mp4" }]);
+    expect(result.importJob).toBeUndefined();
+    expect(result.submissionError).toBe("云管家导入请求超时");
+  });
+
   it("keeps the captured web api host internally without exposing it to the renderer", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "yunguanjia-test-"));
     const configPath = path.join(dir, "yunguanjia-cloud.json");

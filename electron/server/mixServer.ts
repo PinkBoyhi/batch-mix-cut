@@ -353,6 +353,22 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         })),
         skipped: uploadPlan.skipped
       };
+      if (!result.importJob) {
+        workflowStore.update(job.workflowId, {
+          stage: "attention",
+          status: "attention",
+          progress: {
+            current: result.uploaded.length,
+            total: body.videos.length,
+            percent: body.videos.length ? Math.round((result.uploaded.length / body.videos.length) * 100) : 0,
+            unit: "videos",
+            message: result.submissionError ?? "成片已部分上传，但未能提交云管家导入"
+          },
+          error: result.submissionError ?? "成片已部分上传，但未能提交云管家导入"
+        });
+        sendJson(response, 200, { ok: true, result });
+        return;
+      }
       workflowStore.update(job.workflowId, {
         stage: "cloud_processing",
         status: "active",

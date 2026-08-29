@@ -384,7 +384,8 @@ export interface CloudLocalUploadJob {
     videoName: string;
     reason: string;
   }>;
-  importJob: CloudImportJob;
+  importJob?: CloudImportJob;
+  submissionError?: string;
 }
 
 export interface CloudUploadProgress {
@@ -395,6 +396,7 @@ export interface CloudUploadProgress {
   message: string;
   bytesUploaded?: number;
   bytesTotal?: number;
+  requestId?: string;
   videos?: WorkflowVideoResult[];
 }
 
