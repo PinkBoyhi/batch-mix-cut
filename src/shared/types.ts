@@ -388,6 +388,14 @@ export interface CloudLocalUploadJob {
   submissionError?: string;
 }
 
+export interface CloudUploadLedgerEntry {
+  localPath: string;
+  url?: string;
+  submitted: boolean;
+  error?: string;
+  requestId?: string;
+}
+
 export interface CloudUploadProgress {
   taskId: string;
   stage: "uploading" | "processing" | "completed" | "failed" | "attention";
@@ -490,8 +498,9 @@ export interface AppApi {
     videoType?: number;
   }) => Promise<CloudVideoLabel[]>;
   getCloudRawUrl: (videoId: number, isInner: 0 | 1) => Promise<string>;
-  importCloudVideos: (taskId: string, videos: CloudImportVideo[]) => Promise<CloudImportJob>;
-  uploadCloudLocalVideos: (taskId: string, videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
+  getCloudUploadLedger: (outputDir: string, localPaths: string[]) => Promise<CloudUploadLedgerEntry[]>;
+  importCloudVideos: (taskId: string, outputDir: string, videos: CloudImportVideo[]) => Promise<CloudImportJob>;
+  uploadCloudLocalVideos: (taskId: string, outputDir: string, videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
   queryCloudImportResult: (
     requestId: string,
     pageNo?: number,

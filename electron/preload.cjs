@@ -46,8 +46,9 @@ const api = {
   listCloudVideoTypes: (videoType) => ipcRenderer.invoke("cloud:list-video-types", videoType),
   listCloudVideoLabels: (query) => ipcRenderer.invoke("cloud:list-video-labels", query),
   getCloudRawUrl: (videoId, isInner) => ipcRenderer.invoke("cloud:get-raw-url", videoId, isInner),
-  importCloudVideos: (taskId, videos) => ipcRenderer.invoke("cloud:import-videos", taskId, videos),
-  uploadCloudLocalVideos: (taskId, videos) => ipcRenderer.invoke("cloud:upload-local-videos", taskId, videos),
+  getCloudUploadLedger: (outputDir, localPaths) => ipcRenderer.invoke("cloud:get-upload-ledger", outputDir, localPaths),
+  importCloudVideos: (taskId, outputDir, videos) => ipcRenderer.invoke("cloud:import-videos", taskId, outputDir, videos),
+  uploadCloudLocalVideos: (taskId, outputDir, videos) => ipcRenderer.invoke("cloud:upload-local-videos", taskId, outputDir, videos),
   queryCloudImportResult: (requestId, pageNo, pageSize) =>
     ipcRenderer.invoke("cloud:query-import-result", requestId, pageNo, pageSize),
   onJobUpdate: (callback) => {

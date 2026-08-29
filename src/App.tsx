@@ -30,6 +30,7 @@ import type {
   CloudImportResult,
   CloudImportVideo,
   CloudLocalUploadJob,
+  CloudUploadLedgerEntry,
   CloudNameMode,
   CloudLocalUploadVideo,
   CloudPublishMode,
@@ -299,6 +300,8 @@ function TaskWorkspace({
   const [cloudImportRequestIds, setCloudImportRequestIds] = useState<string[]>([]);
   const [cloudImportResults, setCloudImportResults] = useState<CloudImportResult[]>([]);
   const [cloudRowsJobId, setCloudRowsJobId] = useState<string | undefined>();
+  const [cloudLedgerReadyJobId, setCloudLedgerReadyJobId] = useState<string | undefined>();
+  const [cloudLedgerLoading, setCloudLedgerLoading] = useState(false);
   const [cloudBatchProgress, setCloudBatchProgress] = useState<CloudBatchProgress | undefined>();
   const [cloudPublishProfiles, setCloudPublishProfiles] = useState<CloudPublishProfile[]>([]);
   const [selectedCloudPublishProfileId, setSelectedCloudPublishProfileId] = useState("");
@@ -389,6 +392,43 @@ function TaskWorkspace({
   }, [cloudTargetSlot, config?.slots]);
 
   useEffect(() => {
+    if (
+      !api ||
+      !config?.outputDir ||
+      job.status !== "completed" ||
+      cloudRowsJobId !== job.id ||
+      cloudLedgerReadyJobId === job.id ||
+      cloudLedgerLoading
+    ) {
+      return;
+    }
+    let cancelled = false;
+    setCloudLedgerLoading(true);
+    void api
+      .getCloudUploadLedger(config.outputDir, cloudImportRows.map((row) => row.localPath))
+      .then((entries) => {
+        if (!cancelled) {
+          setCloudImportRows((rows) => applyCloudUploadLedger(rows, entries));
+          const requestIds = [...new Set(entries.map((entry) => entry.requestId).filter((requestId): requestId is string => Boolean(requestId)))];
+          if (requestIds.length > 0) {
+            setCloudImportRequestIds((current) => [...new Set([...current, ...requestIds])]);
+            setCloudImportRequestId((current) => current || requestIds.at(-1) || "");
+          }
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) {
+          setCloudLedgerReadyJobId(job.id);
+          setCloudLedgerLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, cloudImportRows, cloudLedgerLoading, cloudLedgerReadyJobId, cloudRowsJobId, config?.outputDir, job.id, job.status]);
+
+  useEffect(() => {
     if (!config || job.status !== "completed") {
       return;
     }
@@ -397,11 +437,16 @@ function TaskWorkspace({
     const skippedCombinationCount = combinations.length - completedCombinations.length;
     const skippedSummary = skippedCombinationCount > 0 ? `；已跳过 ${skippedCombinationCount} 个失败组合` : "";
     const generatedRows = buildCloudImportRows(completedCombinations, cloudPublicUrlPrefix);
-    const rows = cloudRowsJobId === job.id ? cloudImportRows : generatedRows;
     if (cloudRowsJobId !== job.id) {
       setCloudRowsJobId(job.id);
       setCloudImportRows(generatedRows);
+      setCloudLedgerReadyJobId(undefined);
+      return;
     }
+    if (cloudLedgerReadyJobId !== job.id) {
+      return;
+    }
+    const rows = cloudImportRows;
     if (config.exportMode === "draft") {
       setCloudStatus(`混剪已完成，但当前只导出剪映草稿，没有可发布的 MP4${skippedSummary}`);
       return;
@@ -429,16 +474,18 @@ function TaskWorkspace({
       setCloudStatus("混剪已完成；当前关闭了同步到云端，待你打开后再发布。");
       return;
     }
-    if (cloudSettings.hasUploadToken) {
-      setAutoCloudImportJobId(job.id);
-      beginCloudSubmission();
-      void uploadCloudLocalVideos(rows, true);
+    const pendingRows = rows.filter((row) => !row.submitted);
+    if (pendingRows.length === 0) {
+      setCloudStatus(`混剪已完成${skippedSummary}；全部成片已提交云管家，可点击“查询结果”查看处理状态。`);
       return;
     }
-    if (cloudPublicUrlPrefix.trim() && rows.length > 0 && rows.every((row) => row.url.trim())) {
+    if (!cloudSettings.hasUploadToken && pendingRows.some((row) => !row.url.trim())) {
+      setCloudStatus("混剪已完成；未获取上传授权，不能直传本地 mp4。可点击自动获取上传授权，或填写公网 URL 后提交导入。");
+      return;
+    }
+    if (cloudSettings.hasUploadToken || pendingRows.every((row) => row.url.trim())) {
       setAutoCloudImportJobId(job.id);
-      beginCloudSubmission();
-      void submitCloudImport(rows, true);
+      void publishVideos(false, true);
       return;
     }
     setCloudStatus("混剪已完成；未获取上传授权，不能直传本地 mp4。可点击自动获取上传授权，或填写公网 URL 后提交导入。");
@@ -450,6 +497,7 @@ function TaskWorkspace({
     cloudImportMeta.videoType,
     cloudPublicUrlPrefix,
     cloudImportRows,
+    cloudLedgerReadyJobId,
     cloudRowsJobId,
     cloudSettings.hasUploadToken,
     cloudSyncEnabled,
@@ -682,6 +730,8 @@ function TaskWorkspace({
       setCloudImportResults([]);
       setCloudBatchProgress(undefined);
       setCloudRowsJobId(undefined);
+      setCloudLedgerReadyJobId(undefined);
+      setCloudLedgerLoading(false);
       setAutoCloudImportJobId(undefined);
       setActiveMixExecutionTarget(mixExecutionTarget);
       setJob(mixExecutionTarget === "server" ? await api.startRemoteJob(taskId, config) : await api.startJob(taskId, config));
@@ -1141,6 +1191,11 @@ function TaskWorkspace({
 
   async function uploadCloudLocalVideos(rows: CloudImportRow[], automatic: boolean): Promise<boolean> {
     if (!api) return false;
+    const outputDir = resolveCloudUploadLedgerDirectory(config?.outputDir, rows);
+    if (!outputDir) {
+      setCloudStatus("找不到本地成片目录，无法保存上传续传清单");
+      return false;
+    }
     const twoLevelTypeId = Number(cloudImportMeta.twoLevelTypeId);
     if (!Number.isFinite(twoLevelTypeId) || twoLevelTypeId <= 0) {
       setCloudStatus("请先选择云管家二级分类");
@@ -1194,6 +1249,7 @@ function TaskWorkspace({
 
         const result = await api.uploadCloudLocalVideos(
           taskId,
+          outputDir,
           sourceBatch.map((video) => ({ ...video, labelIds }))
         );
         completedBatches = batchIndex + 1;
@@ -1254,11 +1310,16 @@ function TaskWorkspace({
   }
 
   async function importCloudVideos() {
+    const pendingRows = cloudImportRows.filter((row) => !row.submitted);
+    if (pendingRows.length === 0) {
+      setCloudStatus("所有视频都已提交云管家；可点击“查询结果”查看处理状态。");
+      return;
+    }
     beginCloudSubmission();
-    await submitCloudImport(cloudImportRows, false);
+    await submitCloudImport(pendingRows, false);
   }
 
-  async function publishVideos(keepConfigForNext = false) {
+  async function publishVideos(keepConfigForNext = false, automatic = false) {
     const target = config?.exportTarget ?? "cloud";
     if (target === "local") {
       await openLocalExports();
@@ -1271,10 +1332,10 @@ function TaskWorkspace({
       return;
     }
     beginCloudSubmission();
-    if (publicUrlRows.length > 0 && !(await submitCloudImport(publicUrlRows, false))) {
+    if (publicUrlRows.length > 0 && !(await submitCloudImport(publicUrlRows, automatic))) {
       return;
     }
-    if (localUploadRows.length > 0 && !(await uploadCloudLocalVideos(localUploadRows, false))) {
+    if (localUploadRows.length > 0 && !(await uploadCloudLocalVideos(localUploadRows, automatic))) {
       return;
     }
     if (publicUrlRows.length === 0 && localUploadRows.length === 0) {
@@ -1314,6 +1375,11 @@ function TaskWorkspace({
 
   async function submitCloudImport(rows: CloudImportRow[], automatic: boolean): Promise<boolean> {
     if (!api) return false;
+    const outputDir = resolveCloudUploadLedgerDirectory(config?.outputDir, rows);
+    if (!outputDir) {
+      setCloudStatus("找不到本地成片目录，无法保存上传续传清单");
+      return false;
+    }
     const twoLevelTypeId = Number(cloudImportMeta.twoLevelTypeId);
     if (!Number.isFinite(twoLevelTypeId) || twoLevelTypeId <= 0) {
       setCloudStatus("请先选择云管家二级分类");
@@ -1363,6 +1429,7 @@ function TaskWorkspace({
 
         const result = await api.importCloudVideos(
           taskId,
+          outputDir,
           sourceBatch.map((video) => ({ ...video, labelIds }))
         );
         completedBatches = batchIndex + 1;
@@ -3213,6 +3280,11 @@ function dirname(filePath: string): string {
   return index > 0 ? normalized.slice(0, index) : normalized;
 }
 
+function resolveCloudUploadLedgerDirectory(configOutputDir: string | undefined, rows: CloudImportRow[]): string | undefined {
+  if (configOutputDir?.trim()) return configOutputDir;
+  return rows[0]?.localPath ? dirname(rows[0].localPath) : undefined;
+}
+
 function buildVideoPreviewUrl(source: string): string {
   const trimmed = source.trim();
   if (!trimmed) return "";
@@ -3224,6 +3296,20 @@ function buildVideoPreviewUrl(source: string): string {
 
 function buildCloudImportRows(combinations: MixCombination[], publicUrlPrefix: string): CloudImportRow[] {
   return combinations.map((combination) => buildCloudImportRow(combination.targetVideoPath, publicUrlPrefix));
+}
+
+function applyCloudUploadLedger(rows: CloudImportRow[], entries: CloudUploadLedgerEntry[]): CloudImportRow[] {
+  const entriesByPath = new Map(entries.map((entry) => [entry.localPath, entry]));
+  return rows.map((row) => {
+    const entry = entriesByPath.get(row.localPath);
+    if (!entry) return row;
+    return {
+      ...row,
+      url: entry.url ?? row.url,
+      submitted: entry.submitted,
+      uploadError: entry.error
+    };
+  });
 }
 
 function formatSkippedUploadSummary(skipped?: Array<{ reason: string }>): string {

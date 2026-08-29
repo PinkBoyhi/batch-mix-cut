@@ -19,6 +19,7 @@ import { createCombinations } from "./services/combinator.js";
 import { probeAsset } from "./services/mediaProbe.js";
 import { YunguanjiaClient } from "./services/yunguanjiaClient.js";
 import { CloudPublishProfileStore } from "./services/cloudPublishProfiles.js";
+import { CloudUploadLedgerStore } from "./services/cloudUploadLedger.js";
 import { RemoteMixClient } from "./services/remoteMixClient.js";
 import { WorkflowMonitorClient } from "./services/workflowMonitorClient.js";
 import { monitorCloudImport } from "./services/cloudImportMonitor.js";
@@ -44,6 +45,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const cloudClient = new YunguanjiaClient(() => app.getPath("userData"));
 const cloudPublishProfileStore = new CloudPublishProfileStore(() => app.getPath("userData"));
+const cloudUploadLedgerStore = new CloudUploadLedgerStore();
 const updateManager = new UpdateManager(app.getVersion());
 const DEFAULT_CLOUD_LOGIN_URL = "https://sucaiwang.zhishangsoft.com/#/classification";
 const DEFAULT_CLOUD_UPLOAD_BASE_URL = "https://sucaiwang-api-elb.zhishangsoft.com";
@@ -394,7 +396,10 @@ function registerIpc(): void {
   ipcMain.handle("cloud:get-raw-url", async (_event, videoId: number, isInner: 0 | 1) => {
     return cloudClient.getRawUrl(videoId, isInner);
   });
-  ipcMain.handle("cloud:import-videos", async (event, taskId: string, videos: CloudImportVideo[]) => {
+  ipcMain.handle("cloud:get-upload-ledger", async (_event, outputDir: string, localPaths: string[]) => {
+    return cloudUploadLedgerStore.load(outputDir, localPaths);
+  });
+  ipcMain.handle("cloud:import-videos", async (event, taskId: string, outputDir: string, videos: CloudImportVideo[]) => {
     const runtime = getTaskRuntime(event, taskId);
     await ensureCloudWorkflow(runtime, taskId, videos.map((video) => video.videoName));
     await runtime.monitorClient.update({
@@ -405,6 +410,7 @@ function registerIpc(): void {
     });
     try {
       const importJob = await cloudClient.importVideos(videos);
+      await cloudUploadLedgerStore.recordImportSubmission(outputDir, videos, importJob).catch(() => undefined);
       startCloudResultMonitor(event.sender, taskId, runtime, videos.map((video) => video.videoName), importJob);
       return importJob;
     } catch (error) {
@@ -412,7 +418,7 @@ function registerIpc(): void {
       throw error;
     }
   });
-  ipcMain.handle("cloud:upload-local-videos", async (event, taskId: string, videos: CloudLocalUploadVideo[]) => {
+  ipcMain.handle("cloud:upload-local-videos", async (event, taskId: string, outputDir: string, videos: CloudLocalUploadVideo[]) => {
     const runtime = getTaskRuntime(event, taskId);
     const videoNames = videos.map((video) => video.videoName);
     await ensureCloudWorkflow(runtime, taskId, videoNames);
@@ -460,6 +466,7 @@ function registerIpc(): void {
           videos: structuredClone(videoStates)
         }, progress.phase === "uploading");
       });
+      await cloudUploadLedgerStore.recordLocalUpload(outputDir, videos, result).catch(() => undefined);
       if (result.importJob) {
         startCloudResultMonitor(event.sender, taskId, runtime, result.uploaded.map((video) => video.videoName), result.importJob);
       } else {
