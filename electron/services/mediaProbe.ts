@@ -6,6 +6,7 @@ interface ProbeStream {
   codec_type?: string;
   codec_name?: string;
   codec_tag_string?: string;
+  duration?: string;
   width?: number;
   height?: number;
 }
@@ -21,15 +22,24 @@ export async function probeAsset(asset: AssetInfo): Promise<AssetInfo> {
   const probe = await runFfprobe(asset.path);
   const videoStream = probe.streams?.find((stream) => stream.codec_type === "video");
   const audioStream = probe.streams?.find((stream) => stream.codec_type === "audio");
-  const durationSeconds = probe.format?.duration ? Number(probe.format.duration) : undefined;
+  const formatDurationSeconds = positiveNumber(probe.format?.duration);
+  const videoDurationSeconds = positiveNumber(videoStream?.duration) ?? formatDurationSeconds;
+  const audioDurationSeconds = positiveNumber(audioStream?.duration);
 
   return {
     ...asset,
-    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : undefined,
+    durationSeconds: videoDurationSeconds,
+    videoDurationSeconds,
+    audioDurationSeconds,
     width: videoStream?.width,
     height: videoStream?.height,
     hasAudio: Boolean(audioStream && isDecodableAudioStream(audioStream))
   };
+}
+
+function positiveNumber(value: string | undefined): number | undefined {
+  const number = value === undefined ? Number.NaN : Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
 export function isDecodableAudioStream(stream: ProbeStream): boolean {

@@ -37,6 +37,8 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     const videoAssets = await Promise.all(slots.map((slot) => ensureLocalAsset(combination.slotAssets[slot.name], config.outputDir)));
     const first = videoAssets[0];
     const { width, height } = resolveCanvasSize(config, first);
+    const segmentDurations = videoAssets.map(resolveSegmentDuration);
+    const totalDuration = segmentDurations.reduce((sum, duration) => sum + duration, 0);
     const normalizeLoudness = config.normalizeLoudness !== false;
     const sourceLoudness = normalizeLoudness ? await resolveSourceLoudness(videoAssets) : [];
     // BGM can come from a cloud asset as well as from local disk. Resolve it through
@@ -62,28 +64,33 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     }
 
     const videoFilters = videoAssets.map((_, index) => {
-      return `[${index}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS,fps=30,format=yuv420p[v${index}]`;
+      const duration = segmentDurations[index].toFixed(6);
+      return `[${index}:v]trim=start=0:duration=${duration},setpts=PTS-STARTPTS,fps=30,settb=AVTB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v${index}]`;
     });
     const audioFilters = videoAssets.map((asset, index) => {
+      const duration = segmentDurations[index].toFixed(6);
       if (config.sourceVolume > 0 && asset.hasAudio) {
         const gainDb = sourceLoudness[index]?.gainDb ?? 0;
         const volumeFilters = [
           "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo",
           "aresample=async=1:first_pts=0",
+          "apad",
+          `atrim=start=0:duration=${duration}`,
           "asetpts=PTS-STARTPTS",
           `volume=${config.sourceVolume}`,
           gainDb !== 0 ? `volume=${gainDb.toFixed(2)}dB` : undefined
         ].filter(Boolean);
         return `[${index}:a]${volumeFilters.join(",")}[a${index}]`;
       }
-      const duration = Math.max(0.1, asset.durationSeconds ?? 0.1);
-      return `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS[a${index}]`;
+      return `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=${duration},asetpts=PTS-STARTPTS[a${index}]`;
     });
     const concatInputs = videoAssets.map((_, index) => `[v${index}][a${index}]`).join("");
     const filters = [
       ...videoFilters,
       ...audioFilters,
-      `${concatInputs}concat=n=${videoAssets.length}:v=1:a=1[vout][asrc]`
+      `${concatInputs}concat=n=${videoAssets.length}:v=1:a=1[vconcat][aconcat]`,
+      `[vconcat]trim=start=0:duration=${totalDuration.toFixed(6)},setpts=PTS-STARTPTS[vout]`,
+      `[aconcat]apad,atrim=start=0:duration=${totalDuration.toFixed(6)},asetpts=PTS-STARTPTS[asrc]`
     ];
 
     const activeBgmLabels: string[] = [];
@@ -126,10 +133,6 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
 
     args.push("-filter_complex", filters.join(";"), "-map", "[vout]", "-map", "[aout]");
 
-    if (activeBgmLabels.length > 0) {
-      args.push("-shortest");
-    }
-
     args.push(
       "-c:v",
       "libx264",
@@ -171,7 +174,13 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
 
     if (!cancelled) {
       const outputVolume = await repairQuietAudioIfNeeded(combination.targetVideoPath);
-      assertExpectedAudioIsAudible(outputVolume, config, videoAssets, bgmTracks);
+      const outputMetadata = await probeAsset({
+        id: combination.id,
+        path: combination.targetVideoPath,
+        name: path.basename(combination.targetVideoPath),
+        kind: "video"
+      });
+      assertOutputMediaIntegrity(outputMetadata, outputVolume, config, videoAssets, bgmTracks);
     }
   })();
 
@@ -219,6 +228,8 @@ export function mergeAssetMetadata(asset: AssetInfo, metadata: Partial<AssetInfo
     // already measured on the desktop. Losing duration makes a BGM range collapse
     // to the 0.1 second fallback for every segment.
     durationSeconds: metadata.durationSeconds ?? asset.durationSeconds,
+    videoDurationSeconds: metadata.videoDurationSeconds ?? asset.videoDurationSeconds,
+    audioDurationSeconds: metadata.audioDurationSeconds ?? asset.audioDurationSeconds,
     width: metadata.width ?? asset.width,
     height: metadata.height ?? asset.height,
     hasAudio: asset.hasAudio === true || metadata.hasAudio === true
@@ -232,6 +243,8 @@ function getMediaMetadata(asset: AssetInfo): Promise<Partial<AssetInfo>> {
   }
   const promise = probeAsset(asset).then((probed) => ({
     durationSeconds: probed.durationSeconds,
+    videoDurationSeconds: probed.videoDurationSeconds,
+    audioDurationSeconds: probed.audioDurationSeconds,
     width: probed.width,
     height: probed.height,
     hasAudio: probed.hasAudio
@@ -458,7 +471,8 @@ async function measureStableOutputVolume(filePath: string): Promise<VolumeStats>
   return stats;
 }
 
-function assertExpectedAudioIsAudible(
+function assertOutputMediaIntegrity(
+  output: AssetInfo,
   stats: VolumeStats,
   config: MixProjectConfig,
   videoAssets: AssetInfo[],
@@ -469,8 +483,20 @@ function assertExpectedAudioIsAudible(
   if (!expectsSourceAudio && !expectsBgmAudio) {
     return;
   }
+  if (!output.hasAudio) {
+    throw new Error("成片没有可播放的音轨，请重试该组合");
+  }
   if (isProbablySilent(stats)) {
-    throw new Error("成片音轨检测为静音。请检查服务器是否已更新到支持音频探测的最新版，再重试该组合。");
+    throw new Error("成片音轨检测为空或静音，请检查原声、BGM 音量及素材音轨后重试该组合");
+  }
+  if (
+    output.videoDurationSeconds !== undefined &&
+    output.audioDurationSeconds !== undefined &&
+    Math.abs(output.videoDurationSeconds - output.audioDurationSeconds) > 0.25
+  ) {
+    throw new Error(
+      `成片音画时长不一致：画面 ${output.videoDurationSeconds.toFixed(2)} 秒，声音 ${output.audioDurationSeconds.toFixed(2)} 秒`
+    );
   }
 }
 
@@ -538,7 +564,7 @@ function computeLoudnessGain(stats: VolumeStats, targetDb: number): number {
 }
 
 function isProbablySilent(stats: VolumeStats): boolean {
-  return stats.maxDb !== undefined && stats.maxDb <= SILENCE_PEAK_DB;
+  return stats.maxDb === undefined || stats.maxDb <= SILENCE_PEAK_DB;
 }
 
 function clampGain(value: number): number {
@@ -580,6 +606,10 @@ function evenDimension(value: number): number {
   return rounded % 2 === 0 ? rounded : rounded - 1;
 }
 
+function resolveSegmentDuration(asset: AssetInfo): number {
+  return Math.max(0.1, asset.videoDurationSeconds ?? asset.durationSeconds ?? 0.1);
+}
+
 function resolveCanvasSize(config: MixProjectConfig, first: AssetInfo): { width: number; height: number } {
   const canvasMode = config.videoProfile.canvasMode ?? "original";
 
@@ -611,7 +641,7 @@ function resolveBgmRange(
     return undefined;
   }
 
-  const durations = videoAssets.map((asset) => Math.max(0.1, asset.durationSeconds ?? 0.1));
+  const durations = videoAssets.map(resolveSegmentDuration);
   const offsetSeconds = durations.slice(0, startIndex).reduce((sum, duration) => sum + duration, 0);
   const durationSeconds = durations.slice(startIndex, endIndex + 1).reduce((sum, duration) => sum + duration, 0);
 

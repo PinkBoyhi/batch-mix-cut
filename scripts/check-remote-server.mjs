@@ -18,8 +18,8 @@ if (runRemoteWorkflow || !runLocalWorkflow) {
   if (!health.ok || !health.workspaceRoot) {
     throw new Error("服务器健康检查未通过");
   }
-  if (Number(health.audioPipelineVersion ?? 0) < 4) {
-    throw new Error("服务器混剪引擎版本过旧，无法保证 BGM 已下载并混入成片");
+  if (Number(health.audioPipelineVersion ?? 0) < 5) {
+    throw new Error("服务器混剪引擎版本过旧，无法保证完整音轨和音画同步");
   }
   if (Number(health.combinationPipelineVersion ?? 0) < 3) {
     throw new Error("服务器组合引擎版本过旧，无法保证开头素材轮换");
@@ -100,10 +100,15 @@ async function runRemoteMixSmokeTest({ serverUrl, token }) {
     const snapshots = await Promise.all(completions);
     for (const [index, fixture] of fixtures.entries()) {
       assertCompletedSnapshot(snapshots[index], `服务器完整混剪测试 ${index + 1}`, fixture.expectedCount);
-      const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, `服务器回传成片 ${index + 1}`);
+      const files = await assertWorkflowOutputs(
+        fixture.config.outputDir,
+        fixture.expectedCount,
+        `服务器回传成片 ${index + 1}`,
+        fixture.expectedDurations
+      );
       assertCartesianCombinationOrder(files, `服务器回传成片 ${index + 1}`);
     }
-    console.log("服务器完整混剪测试通过：3 个并发/排队任务共 24 条严格排列组合均已混剪、回传，并确认强原声下 B 段 BGM 仍可听见");
+    console.log("服务器完整混剪测试通过：3 个并发/排队任务共 24 条严格排列组合均已混剪、回传，并确认音画时长一致、段落无卡帧、BGM 可听见");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -120,9 +125,9 @@ async function runLocalMixWorkflowSmokeTest() {
     await manager.start(fixture.config);
     const snapshot = await completion;
     assertCompletedSnapshot(snapshot, "本地完整混剪测试", fixture.expectedCount);
-    const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "本地成片");
+    const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "本地成片", fixture.expectedDurations);
     assertCartesianCombinationOrder(files, "本地成片");
-    console.log("本地完整混剪测试通过：A=2、B=2、C=2 的 8 个严格排列组合、BGM 轮换，以及强原声下 B 段的 BGM 音量均已校验");
+    console.log("本地完整混剪测试通过：8 个严格排列组合、长短音轨对齐、段落无卡帧、BGM 轮换及音量均已校验");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -142,8 +147,8 @@ async function createWorkflowFixture(rootDir, mode) {
   const bgm1 = path.join(sourcesDir, "BGM-01.m4a");
   const bgm2 = path.join(sourcesDir, "BGM-02.m4a");
   await Promise.all([
-    createTestVideo(a1, { size: "320x568", rate: 30, duration: 0.8, frequency: 430, audioVolume: 6 }),
-    createTestVideo(a2, { size: "568x320", rate: 24, duration: 0.7, frequency: 510, audioVolume: 6 }),
+    createTestVideo(a1, { size: "320x568", rate: 30, duration: 0.8, audioDuration: 1.2, frequency: 430, audioVolume: 6 }),
+    createTestVideo(a2, { size: "568x320", rate: 24, duration: 0.7, audioDuration: 0.25, frequency: 510, audioVolume: 6 }),
     createTestVideo(b1, { size: "240x320", rate: 25, duration: 0.7, frequency: 620, audioVolume: 6 }),
     createTestVideo(b2, { size: "320x240", rate: 60, duration: 0.8, frequency: 710, audioVolume: 6 }),
     createTestVideo(c1, { size: "320x568", rate: 30, duration: 0.6, frequency: 820, audioVolume: 6 }),
@@ -204,7 +209,13 @@ async function createWorkflowFixture(rootDir, mode) {
   if (bgmNames.join(",") !== expectedBgms.join(",")) {
     throw new Error(`BGM 轮换测试失败：${bgmNames.join(",")}`);
   }
-  return { config, expectedCount: 8 };
+  const expectedDurations = new Map(
+    combinations.map((combination) => [
+      path.basename(combination.targetVideoPath),
+      config.slots.reduce((total, slot) => total + Number(combination.slotAssets[slot.name]?.durationSeconds ?? 0), 0)
+    ])
+  );
+  return { config, expectedCount: 8, expectedDurations };
 }
 
 function videoAsset(filePath, name, width, height, durationSeconds) {
@@ -244,7 +255,7 @@ function assertCompletedSnapshot(snapshot, label, expectedCount) {
   }
 }
 
-async function assertWorkflowOutputs(outputDir, expectedCount, label) {
+async function assertWorkflowOutputs(outputDir, expectedCount, label, expectedDurations) {
   const videosDir = path.join(outputDir, "videos");
   const files = (await fs.readdir(videosDir)).filter((file) => file.toLowerCase().endsWith(".mp4")).sort();
   if (files.length !== expectedCount) {
@@ -261,6 +272,18 @@ async function assertWorkflowOutputs(outputDir, expectedCount, label) {
     const audio = streams.find((stream) => stream.codec_type === "audio");
     if (video?.codec_name !== "h264" || audio?.codec_name !== "aac") {
       throw new Error(`${label}音视频流校验失败：${file}`);
+    }
+    const videoDuration = Number(video.duration);
+    const audioDuration = Number(audio.duration);
+    const expectedDuration = expectedDurations.get(file);
+    if (!Number.isFinite(videoDuration) || !Number.isFinite(audioDuration) || !Number.isFinite(expectedDuration)) {
+      throw new Error(`${label}无法读取音画时长：${file}`);
+    }
+    if (Math.abs(videoDuration - expectedDuration) > 0.15) {
+      throw new Error(`${label}存在卡帧或段落时长错误：${file}（视频 ${videoDuration.toFixed(3)} 秒，预期 ${expectedDuration.toFixed(3)} 秒）`);
+    }
+    if (Math.abs(videoDuration - audioDuration) > 0.15) {
+      throw new Error(`${label}音画不同步：${file}（视频 ${videoDuration.toFixed(3)} 秒，音频 ${audioDuration.toFixed(3)} 秒）`);
     }
     await assertVisibleVideoFrame(filePath, label, file);
     await assertAudibleAudio(filePath, label, file);
@@ -399,7 +422,7 @@ async function assertBgmToneAtTimestamp(filePath, timestampSeconds, frequency, l
   }
 }
 
-async function createTestVideo(targetPath, { size, rate, duration, frequency, audioVolume = 1 }) {
+async function createTestVideo(targetPath, { size, rate, duration, audioDuration = duration, frequency, audioVolume = 1 }) {
   const require = createRequire(import.meta.url);
   const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
   await runProcess(ffmpegPath, [
@@ -408,12 +431,10 @@ async function createTestVideo(targetPath, { size, rate, duration, frequency, au
       "error",
       "-f",
       "lavfi",
-      "-i", `testsrc2=size=${size}:rate=${rate}`,
+      "-i", `testsrc2=size=${size}:rate=${rate}:duration=${duration}`,
       "-f",
       "lavfi",
-      "-i", `sine=frequency=${frequency}:sample_rate=48000,volume=${audioVolume}`,
-      "-t",
-      String(duration),
+      "-i", `sine=frequency=${frequency}:sample_rate=48000:duration=${audioDuration},volume=${audioVolume}`,
       "-c:v",
       "libx264",
       "-preset",

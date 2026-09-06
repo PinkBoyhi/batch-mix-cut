@@ -23,6 +23,8 @@ export interface AssetInfo {
   name: string;
   kind: AssetKind;
   durationSeconds?: number;
+  videoDurationSeconds?: number;
+  audioDurationSeconds?: number;
   width?: number;
   height?: number;
   hasAudio?: boolean;
