@@ -249,7 +249,7 @@ function registerIpc(): void {
       name: path.basename(filePath),
       kind
     }));
-    return Promise.all(assets.map(probeAsset));
+    return Promise.all(assets.map((asset) => probeAsset(asset)));
   });
 
   ipcMain.handle("project:create-manual", async (_event, outputDir: string) => {

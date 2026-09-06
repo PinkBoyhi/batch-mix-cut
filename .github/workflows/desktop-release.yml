@@ -52,11 +52,14 @@ jobs:
         run: |
           pnpm install --frozen-lockfile || (sleep 20 && pnpm install --frozen-lockfile)
 
-      - name: Run test suite
-        run: pnpm test
+      - name: Check types and run test suite
+        run: pnpm typecheck && pnpm test
 
       - name: Build Windows installer
         run: pnpm build && pnpm exec electron-builder --win --x64 --publish never
+
+      - name: Verify desktop UI workflow
+        run: pnpm smoke:ui
 
       - name: Verify full local mixing workflow
         run: pnpm smoke:workflow:local
@@ -73,7 +76,6 @@ jobs:
   build-mac:
     needs: metadata
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -91,8 +93,8 @@ jobs:
         run: |
           pnpm install --frozen-lockfile || (sleep 20 && pnpm install --frozen-lockfile)
 
-      - name: Run test suite
-        run: pnpm test
+      - name: Check types and run test suite
+        run: pnpm typecheck && pnpm test
 
       - name: Build macOS installer
         shell: bash
@@ -122,6 +124,9 @@ jobs:
           pnpm build
           pnpm exec electron-builder --mac --arm64 --publish never
 
+      - name: Verify desktop UI workflow
+        run: pnpm smoke:ui
+
       - name: Verify full local mixing workflow
         run: pnpm smoke:workflow:local
 
@@ -137,7 +142,7 @@ jobs:
             release/*.zip.blockmap
 
   publish-release:
-    if: ${{ always() && needs.build-windows.result == 'success' }}
+    if: ${{ always() && needs.build-windows.result == 'success' && needs.build-mac.result == 'success' }}
     needs:
       - metadata
       - build-windows

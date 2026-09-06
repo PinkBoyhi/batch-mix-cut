@@ -4,7 +4,7 @@
 
 1. 管代码：功能更新、Bug 修复、版本记录都进仓库。
 2. 打安装包：GitHub Actions 同时生成 Windows 和 macOS 安装包。
-3. 发更新：GitHub Releases 保存安装包和 `latest.yml / latest-mac.yml`，软件从这里检查、下载和安装更新。
+3. 发更新：GitHub Releases 保存安装包和 `latest.yml / latest-mac.yml`，软件检查新版本后打开发布页，由用户手动下载安装。
 
 当前自动更新地址：
 
@@ -12,7 +12,7 @@
 https://github.com/PinkBoyhi/batch-mix-cut/releases/latest/download/
 ```
 
-如果仓库保持私有，普通用户的软件可能无法直接下载更新文件。要让组员无感更新，建议让 Release 文件公开可访问，或者后续换成对象存储、NAS、Nginx 等固定静态地址。
+如果仓库保持私有，普通用户的软件可能无法直接下载更新文件。要让组员正常下载安装，建议让 Release 文件公开可访问，或者后续换成对象存储、NAS、Nginx 等固定静态地址。
 
 ## 每次更新功能
 
@@ -58,7 +58,7 @@ latest.yml
 latest-mac.yml
 ```
 
-其中 Windows 客户端读取 `latest.yml`，macOS 客户端读取 `latest-mac.yml`。软件内点击“下载新版”会直接下载更新，完成后点击“重启安装”。
+软件更新区检查 GitHub Releases 版本，并打开下载页。当前不自动下载安装；组员应下载对应系统安装包后手动安装覆盖。Windows 与 macOS 构建、测试及界面检查全部通过后才发布。
 
 ## 分支建议
 

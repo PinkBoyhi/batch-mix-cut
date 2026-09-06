@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -256,6 +256,10 @@ function TaskWorkspace({
   const [combinations, setCombinations] = useState<MixCombination[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [job, setJob] = useState<BatchJobSnapshot>(emptyJob);
+  const [startingJob, setStartingJob] = useState(false);
+  const startLock = useRef(false);
+  const configRevision = useRef(0);
+  const [runCombinations, setRunCombinations] = useState<MixCombination[] | undefined>();
   const [mixExecutionTarget, setMixExecutionTarget] = useState<MixExecutionTarget>("local");
   const [activeMixExecutionTarget, setActiveMixExecutionTarget] = useState<MixExecutionTarget>("local");
   const [remoteMixSettings, setRemoteMixSettings] = useState<RemoteMixSettingsView>(emptyRemoteMixSettings);
@@ -314,6 +318,8 @@ function TaskWorkspace({
   const [videoPreview, setVideoPreview] = useState<VideoPreviewState | undefined>();
   const [videoPreviewError, setVideoPreviewError] = useState<string | undefined>();
   const cloudUserReady = Boolean(cloudSettings.accountKey);
+  const completedRunKey = `${job.id}:${job.startedAt ?? ""}`;
+  const cloudLedgerPaths = JSON.stringify(cloudImportRows.map((row) => row.localPath));
 
   useEffect(() => {
     if (!api) return;
@@ -341,8 +347,8 @@ function TaskWorkspace({
   }, [api, cloudBatchProgress, taskId]);
 
   useEffect(() => {
-    onTaskStatusChange(taskId, job.status);
-  }, [job.status, onTaskStatusChange, taskId]);
+    onTaskStatusChange(taskId, startingJob ? "running" : job.status);
+  }, [job.status, startingJob, onTaskStatusChange, taskId]);
 
   useEffect(() => {
     if (config?.outputDir) {
@@ -396,19 +402,19 @@ function TaskWorkspace({
       !api ||
       !config?.outputDir ||
       job.status !== "completed" ||
-      cloudRowsJobId !== job.id ||
-      cloudLedgerReadyJobId === job.id ||
-      cloudLedgerLoading
+      cloudRowsJobId !== completedRunKey ||
+      cloudLedgerReadyJobId === completedRunKey
     ) {
       return;
     }
     let cancelled = false;
     setCloudLedgerLoading(true);
     void api
-      .getCloudUploadLedger(config.outputDir, cloudImportRows.map((row) => row.localPath))
+      .getCloudUploadLedger(config.outputDir, JSON.parse(cloudLedgerPaths) as string[])
       .then((entries) => {
         if (!cancelled) {
           setCloudImportRows((rows) => applyCloudUploadLedger(rows, entries));
+          setCloudLedgerReadyJobId(completedRunKey);
           const requestIds = [...new Set(entries.map((entry) => entry.requestId).filter((requestId): requestId is string => Boolean(requestId)))];
           if (requestIds.length > 0) {
             setCloudImportRequestIds((current) => [...new Set([...current, ...requestIds])]);
@@ -416,34 +422,36 @@ function TaskWorkspace({
           }
         }
       })
-      .catch(() => undefined)
+      .catch((err) => { if (!cancelled) setCloudStatus(`上传记录读取失败：${toMessage(err)}`); })
       .finally(() => {
         if (!cancelled) {
-          setCloudLedgerReadyJobId(job.id);
           setCloudLedgerLoading(false);
         }
       });
     return () => {
       cancelled = true;
+      setCloudLedgerLoading(false);
     };
-  }, [api, cloudImportRows, cloudLedgerLoading, cloudLedgerReadyJobId, cloudRowsJobId, config?.outputDir, job.id, job.status]);
+    // Loading and restored row metadata must not cancel this request.
+  }, [api, cloudLedgerPaths, cloudRowsJobId, config?.outputDir, completedRunKey, job.status]);
 
   useEffect(() => {
-    if (!config || job.status !== "completed") {
+    if (!config || job.status !== "completed" || cloudLedgerLoading || cloudBusy) {
       return;
     }
     const failedCombinationIds = new Set(job.failures.map((failure) => failure.combinationId));
-    const completedCombinations = combinations.filter((combination) => !failedCombinationIds.has(combination.id));
-    const skippedCombinationCount = combinations.length - completedCombinations.length;
+    const exportedCombinations = runCombinations ?? combinations;
+    const completedCombinations = exportedCombinations.filter((combination) => !failedCombinationIds.has(combination.id));
+    const skippedCombinationCount = exportedCombinations.length - completedCombinations.length;
     const skippedSummary = skippedCombinationCount > 0 ? `；已跳过 ${skippedCombinationCount} 个失败组合` : "";
     const generatedRows = buildCloudImportRows(completedCombinations, cloudPublicUrlPrefix);
-    if (cloudRowsJobId !== job.id) {
-      setCloudRowsJobId(job.id);
+    if (cloudRowsJobId !== completedRunKey) {
+      setCloudRowsJobId(completedRunKey);
       setCloudImportRows(generatedRows);
       setCloudLedgerReadyJobId(undefined);
       return;
     }
-    if (cloudLedgerReadyJobId !== job.id) {
+    if (cloudLedgerReadyJobId !== completedRunKey) {
       return;
     }
     const rows = cloudImportRows;
@@ -459,7 +467,7 @@ function TaskWorkspace({
       setCloudStatus(`混剪已完成${skippedSummary}；可在发布页选择上传云管家，或点击本地下载打开成片目录。`);
       return;
     }
-    if (autoCloudImportJobId === job.id) {
+    if (autoCloudImportJobId === completedRunKey) {
       return;
     }
     if (!cloudUserReady) {
@@ -484,13 +492,15 @@ function TaskWorkspace({
       return;
     }
     if (cloudSettings.hasUploadToken || pendingRows.every((row) => row.url.trim())) {
-      setAutoCloudImportJobId(job.id);
+      setAutoCloudImportJobId(completedRunKey);
       void publishVideos(false, true);
       return;
     }
     setCloudStatus("混剪已完成；未获取上传授权，不能直传本地 mp4。可点击自动获取上传授权，或填写公网 URL 后提交导入。");
   }, [
     autoCloudImportJobId,
+    cloudLedgerLoading,
+    cloudBusy,
     cloudImportMeta.labelIds,
     cloudImportMeta.twoLevelTypeId,
     cloudImportMeta.videoRight,
@@ -503,8 +513,10 @@ function TaskWorkspace({
     cloudSyncEnabled,
     cloudUserReady,
     combinations,
+    runCombinations,
     config,
-    job.id,
+    completedRunKey,
+    job.failures,
     job.status
   ]);
 
@@ -513,7 +525,7 @@ function TaskWorkspace({
   const canStart =
     !!config &&
     combinations.length > 0 &&
-    !hasActiveTask &&
+    !hasActiveTask && !startingJob && !busy && !cloudBusy &&
     (mixExecutionTarget === "local" || (remoteMixSettings.ok === true && remoteMixSettings.hasToken));
   const speedModeEnabled = Boolean(config && config.normalizeLoudness === false && config.videoProfile.preset === "veryfast");
   const slotSummary = useMemo(() => {
@@ -578,6 +590,7 @@ function TaskWorkspace({
   );
 
   async function createProject() {
+    if (hasActiveTask || startLock.current || cloudBusy) return;
     if (!api) {
       setError("当前页面没有连接到 Electron 本地能力。请使用桌面窗口操作。");
       return;
@@ -588,6 +601,7 @@ function TaskWorkspace({
       const outputDir = await api.selectDirectory();
       if (!outputDir) return;
       const result = await api.createManualProject(outputDir);
+      setRunCombinations(undefined);
       setConfig(result.config);
       setCombinations(result.combinations);
       setWarnings(result.warnings);
@@ -604,13 +618,20 @@ function TaskWorkspace({
   }
 
   async function applyConfig(nextConfig: MixProjectConfig) {
+    if (hasActiveTask || startLock.current || cloudBusy) return;
+    const revision = ++configRevision.current;
     const normalizedConfig = normalizeBgmRange(nextConfig);
     setConfig(normalizedConfig);
     if (!api) {
       setCombinations([]);
       return;
     }
-    setCombinations(await api.buildCombinations(normalizedConfig));
+    setBusy(true);
+    try {
+      const next = await api.buildCombinations(normalizedConfig);
+      if (configRevision.current === revision) setCombinations(next);
+    } catch (err) { setError(toMessage(err)); }
+    finally { if (configRevision.current === revision) setBusy(false); }
   }
 
   async function setSegmentCount(count: number) {
@@ -721,7 +742,10 @@ function TaskWorkspace({
   }
 
   async function startJob() {
-    if (!config || !api) return;
+    if (!config || !api || !canStart || startLock.current) return;
+    startLock.current = true;
+    setStartingJob(true);
+    setRunCombinations(structuredClone(combinations));
     setError(undefined);
     try {
       setCloudImportRows([]);
@@ -737,6 +761,9 @@ function TaskWorkspace({
       setJob(mixExecutionTarget === "server" ? await api.startRemoteJob(taskId, config) : await api.startJob(taskId, config));
     } catch (err) {
       setError(toMessage(err));
+    } finally {
+      startLock.current = false;
+      setStartingJob(false);
     }
   }
 
@@ -1320,13 +1347,14 @@ function TaskWorkspace({
   }
 
   async function publishVideos(keepConfigForNext = false, automatic = false) {
+    if (hasActiveTask || startingJob || cloudBusy || cloudLedgerLoading) return;
     const target = config?.exportTarget ?? "cloud";
     if (target === "local") {
       await openLocalExports();
       return;
     }
     const publicUrlRows = cloudImportRows.filter((row) => row.url.trim() && !row.submitted);
-    const localUploadRows = cloudImportRows.filter((row) => !row.url.trim());
+    const localUploadRows = cloudImportRows.filter((row) => !row.url.trim() && !row.submitted);
     if (localUploadRows.length > 0 && !cloudSettings.hasUploadToken) {
       setCloudStatus("发布失败：缺少云管家上传授权，无法直传本地 mp4。请在云管家登录里点击自动获取上传授权，或给每条视频填公网 URL 后导入。");
       return;
@@ -1544,7 +1572,7 @@ function TaskWorkspace({
           </div>
         </div>
 
-        <button className="primary-action" type="button" onClick={createProject} disabled={busy}>
+        <button className="primary-action" type="button" onClick={createProject} disabled={busy || hasActiveTask || startingJob || cloudBusy}>
           <FolderOpen size={18} />
           <span>{busy ? "处理中" : "选择输出目录"}</span>
         </button>
@@ -1554,7 +1582,7 @@ function TaskWorkspace({
         </button>
 
         {config && (
-          <section className="panel">
+          <fieldset disabled={hasActiveTask || startingJob || cloudBusy} className="panel">
             <h2>段落设置</h2>
             <label className="field">
               <span>段落数</span>
@@ -1570,11 +1598,11 @@ function TaskWorkspace({
               <ListPlus size={16} />
               <span>添加段落</span>
             </button>
-          </section>
+          </fieldset>
         )}
 
         {config && (
-          <section className="panel">
+          <fieldset disabled={hasActiveTask || startingJob || cloudBusy} className="panel">
             <h2>导出设置</h2>
             <label className="field">
               <span>混剪位置</span>
@@ -1731,7 +1759,7 @@ function TaskWorkspace({
                 {config.outputDir}
               </button>
             </div>
-          </section>
+          </fieldset>
         )}
 
         <section className="panel">
@@ -1789,7 +1817,7 @@ function TaskWorkspace({
                   ? runAction(() => (activeMixExecutionTarget === "server" ? api.retryRemoteFailures(taskId) : api.retryFailures(taskId)))
                   : undefined)
               }
-              disabled={job.failures.length === 0 || job.status === "running"}
+              disabled={job.failures.length === 0 || hasActiveTask || startingJob}
               title="重试失败"
             >
               <RotateCcw size={17} />
@@ -1868,7 +1896,7 @@ function TaskWorkspace({
 
         {config ? (
           <div className="content-grid">
-            <section className="panel full">
+            <fieldset disabled={hasActiveTask || startingJob || cloudBusy} className="panel full">
               <h2>段落素材</h2>
               <div className="manual-slot-list">
                 {config.slots.map((slot) => (
@@ -1900,9 +1928,9 @@ function TaskWorkspace({
                   </div>
                 ))}
               </div>
-            </section>
+            </fieldset>
 
-            <section className="panel wide">
+            <fieldset disabled={hasActiveTask || startingJob || cloudBusy} className="panel wide">
               <h2>BGM 素材</h2>
               <button className="inline-command" type="button" onClick={addBgmTrack}>
                 <ListPlus size={16} />
@@ -1956,7 +1984,7 @@ function TaskWorkspace({
                   </div>
                 ))}
               </div>
-            </section>
+            </fieldset>
 
             <section className="panel full">
               <h2>云管家登录</h2>

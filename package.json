@@ -1,6 +1,6 @@
 {
   "name": "batch-mix-cut",
-  "version": "0.1.52",
+  "version": "0.1.53",
   "private": true,
   "type": "module",
   "description": "本地批量混剪与剪映草稿替换工具",
@@ -17,6 +17,7 @@
     "publish:win": "pnpm build && electron-builder --win --x64 --publish always",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
+    "smoke:ui": "electron scripts/check-ui.cjs",
     "smoke:workflow:local": "node scripts/check-remote-server.mjs --local",
     "verify:release": "pnpm typecheck && pnpm test && pnpm build && node scripts/check-remote-server.mjs --e2e"
   },

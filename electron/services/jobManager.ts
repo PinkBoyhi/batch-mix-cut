@@ -6,6 +6,7 @@ import type {
   MixCombination,
   MixProjectConfig
 } from "../../src/shared/types.js";
+import { assertOutputAvailable } from "./outputFiles.js";
 import { createCombinations } from "./combinator.js";
 import { exportVideo, type ExportHandle } from "./ffmpeg.js";
 import { generateJianyingDraft } from "./jianyingDraft.js";
@@ -29,6 +30,7 @@ export class JobManager extends EventEmitter {
       throw new Error("已有任务正在运行");
     }
 
+    config = structuredClone(config);
     this.config = config;
     this.combinations = createCombinations(
       config.slots,
@@ -38,6 +40,7 @@ export class JobManager extends EventEmitter {
       config.outputNamePattern,
       config.bgmTracks
     );
+    if (this.combinations.length === 0) throw new Error("没有可导出的组合，请检查段落素材和最大数量");
     this.failedCombinationIds.clear();
     this.stopped = false;
     this.paused = false;
@@ -128,6 +131,11 @@ export class JobManager extends EventEmitter {
 
     try {
       await fs.mkdir(config.outputDir, { recursive: true });
+      // Reject the whole batch before encoding if an output already exists.
+      for (const combination of items) {
+        if (this.stopped) break;
+        if (config.exportMode !== "draft") await assertOutputAvailable(combination.targetVideoPath);
+      }
 
       for (const combination of items) {
         await this.waitWhilePaused();
@@ -155,11 +163,9 @@ export class JobManager extends EventEmitter {
           this.emitUpdate();
         } catch (error) {
           this.currentExport = undefined;
+          if (this.stopped) break;
           const phase = config.exportMode === "draft" ? "draft" : "video";
           this.recordFailure(combination, phase, error);
-          if (this.stopped) {
-            break;
-          }
         }
       }
 

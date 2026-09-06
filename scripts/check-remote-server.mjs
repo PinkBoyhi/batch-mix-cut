@@ -18,7 +18,7 @@ if (runRemoteWorkflow || !runLocalWorkflow) {
   if (!health.ok || !health.workspaceRoot) {
     throw new Error("服务器健康检查未通过");
   }
-  if (Number(health.audioPipelineVersion ?? 0) < 5) {
+  if (Number(health.audioPipelineVersion ?? 0) < 6) {
     throw new Error("服务器混剪引擎版本过旧，无法保证完整音轨和音画同步");
   }
   if (Number(health.combinationPipelineVersion ?? 0) < 3) {

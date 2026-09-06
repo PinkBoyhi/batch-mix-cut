@@ -1,6 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import fs from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
@@ -8,6 +9,7 @@ import path from "node:path";
 import type { AssetInfo, MixCombination, MixCombinationBgmTrack, MixProjectConfig } from "../../src/shared/types.js";
 import { describeMissingBinary, getFfmpegPath } from "./ffmpegBinaries.js";
 import { probeAsset } from "./mediaProbe.js";
+import { assertOutputAvailable, publishOutput } from "./outputFiles.js";
 
 export interface ExportHandle {
   promise: Promise<void>;
@@ -19,8 +21,9 @@ interface VolumeStats {
   maxDb?: number;
 }
 
-const loudnessCache = new Map<string, Promise<VolumeStats>>();
-const mediaMetadataCache = new Map<string, Promise<Partial<AssetInfo>>>();
+interface FileCacheEntry<T> { fingerprint: string; value: T }
+const loudnessCache = new Map<string, FileCacheEntry<VolumeStats>>();
+const mediaMetadataCache = new Map<string, FileCacheEntry<Partial<AssetInfo>>>();
 const TARGET_AUDIBLE_MEAN_DB = -23;
 const TARGET_PEAK_DB = -1.5;
 const MIN_GAIN_DB = -18;
@@ -28,31 +31,36 @@ const MAX_GAIN_DB = 60;
 const SILENCE_PEAK_DB = -85;
 
 export function exportVideo(config: MixProjectConfig, combination: MixCombination): ExportHandle {
-  let child: ChildProcessWithoutNullStreams | undefined;
-  let cancelled = false;
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const temporaryPath = `${combination.targetVideoPath}.${crypto.randomUUID()}.partial`;
 
   const promise = (async () => {
     await fs.mkdir(path.dirname(combination.targetVideoPath), { recursive: true });
+    signal.throwIfAborted();
+    await assertOutputAvailable(combination.targetVideoPath);
     const slots = [...config.slots].sort((a, b) => a.sortOrder - b.sortOrder);
-    const videoAssets = await Promise.all(slots.map((slot) => ensureLocalAsset(combination.slotAssets[slot.name], config.outputDir)));
+    const videoAssets = await Promise.all(slots.map((slot) => ensureLocalAsset(combination.slotAssets[slot.name], config.outputDir, signal)));
+    signal.throwIfAborted();
     const first = videoAssets[0];
+    if (!first) throw new Error("没有可导出的视频素材");
     const { width, height } = resolveCanvasSize(config, first);
     const segmentDurations = videoAssets.map(resolveSegmentDuration);
     const totalDuration = segmentDurations.reduce((sum, duration) => sum + duration, 0);
     const normalizeLoudness = config.normalizeLoudness !== false;
-    const sourceLoudness = normalizeLoudness ? await resolveSourceLoudness(videoAssets) : [];
+    const sourceLoudness = normalizeLoudness ? await resolveSourceLoudness(videoAssets, signal) : [];
     // BGM can come from a cloud asset as well as from local disk. Resolve it through
     // the same cache path as video assets so the server never asks FFmpeg to mix an
     // unreachable remote URL directly.
     const bgmTracks = await Promise.all(
       resolveCombinationBgmTracks(config, combination).map(async (track) => ({
         ...track,
-        asset: await ensureLocalAsset(track.asset, config.outputDir)
+        asset: await ensureLocalAsset(track.asset, config.outputDir, signal)
       }))
     );
     const bgmTargetDb = resolveBgmTargetDb(sourceLoudness);
     const bgmLoudness = normalizeLoudness
-      ? await resolveBgmLoudness(bgmTracks, bgmTargetDb)
+      ? await resolveBgmLoudness(bgmTracks, bgmTargetDb, signal)
       : [];
 
     const args: string[] = ["-y"];
@@ -144,11 +152,12 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       "aac",
       "-movflags",
       "+faststart",
-      combination.targetVideoPath
+      "-f", "mp4", temporaryPath
     );
 
     await new Promise<void>((resolve, reject) => {
-      child = spawn(getFfmpegPath(), args);
+      signal.throwIfAborted();
+      const child = spawn(getFfmpegPath(), args, { signal });
       let stderr = "";
 
       child.stderr.on("data", (chunk: Buffer) => {
@@ -158,9 +167,9 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
         }
       });
 
-      child.on("error", (error) => reject(describeMissingBinary("ffmpeg", error)));
+      child.on("error", (error) => { if (!signal.aborted) reject(describeMissingBinary("ffmpeg", error)); });
       child.on("close", (code) => {
-        if (cancelled) {
+        if (signal.aborted) {
           reject(new Error("任务已停止"));
           return;
         }
@@ -172,40 +181,49 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       });
     });
 
-    if (!cancelled) {
-      const outputVolume = await repairQuietAudioIfNeeded(combination.targetVideoPath);
-      const outputMetadata = await probeAsset({
-        id: combination.id,
-        path: combination.targetVideoPath,
-        name: path.basename(combination.targetVideoPath),
-        kind: "video"
-      });
-      assertOutputMediaIntegrity(outputMetadata, outputVolume, config, videoAssets, bgmTracks);
-    }
-  })();
+    signal.throwIfAborted();
+    // User volume is the final gain. Never amplify the already mixed output.
+    const outputVolume = await measureStableOutputVolume(temporaryPath, signal);
+    const outputMetadata = await probeAsset({
+      id: combination.id, path: temporaryPath, name: path.basename(combination.targetVideoPath), kind: "video"
+    }, signal);
+    assertOutputMediaIntegrity(outputMetadata, outputVolume, config, videoAssets, bgmTracks);
+    signal.throwIfAborted();
+    await publishOutput(temporaryPath, combination.targetVideoPath);
+  })().catch((error) => {
+    if (signal.aborted) throw new Error("任务已停止");
+    throw error;
+  }).finally(async () => {
+    loudnessCache.delete(temporaryPath);
+    await fs.unlink(temporaryPath).catch(() => undefined);
+  });
 
-  return {
-    promise,
-    cancel: () => {
-      cancelled = true;
-      child?.kill("SIGTERM");
-    }
-  };
+  return { promise, cancel: () => controller.abort() };
 }
 
-async function ensureLocalAsset(asset: AssetInfo, outputDir: string): Promise<AssetInfo> {
+async function ensureLocalAsset(asset: AssetInfo, outputDir: string, signal: AbortSignal): Promise<AssetInfo> {
   if (!/^https?:\/\//i.test(asset.path)) {
-    return shouldProbeAsset(asset) ? withProbedMetadata(asset) : asset;
+    return shouldProbeAsset(asset) ? withProbedMetadata(asset, signal) : asset;
   }
 
   const cacheDir = path.join(outputDir, ".cloud-cache");
   await fs.mkdir(cacheDir, { recursive: true });
   const cachePath = path.join(cacheDir, `${crypto.createHash("sha1").update(asset.path).digest("hex")}${extensionFromUrl(asset.path)}`);
   if (!(await exists(cachePath))) {
-    await downloadRemoteAsset(asset.path, cachePath);
+    const downloadPath = `${cachePath}.${crypto.randomUUID()}.partial`;
+    try {
+      await downloadRemoteAsset(asset.path, downloadPath, signal);
+      signal.throwIfAborted();
+      // Only expose a complete download; simultaneous readers never see a prefix.
+      if (!(await exists(cachePath))) await publishOutput(downloadPath, cachePath).catch(async (error) => {
+        if (!(await exists(cachePath))) throw error;
+      });
+    } finally {
+      await fs.unlink(downloadPath).catch(() => undefined);
+    }
   }
   return {
-    ...(await withProbedMetadata({ ...asset, path: cachePath }))
+    ...(await withProbedMetadata({ ...asset, path: cachePath }, signal))
   };
 }
 
@@ -213,8 +231,8 @@ function shouldProbeAsset(asset: AssetInfo): boolean {
   return asset.kind === "video";
 }
 
-async function withProbedMetadata(asset: AssetInfo): Promise<AssetInfo> {
-  const metadata = await getMediaMetadata(asset);
+async function withProbedMetadata(asset: AssetInfo, signal: AbortSignal): Promise<AssetInfo> {
+  const metadata = await getMediaMetadata(asset, signal);
   return mergeAssetMetadata(asset, metadata);
 }
 
@@ -236,21 +254,29 @@ export function mergeAssetMetadata(asset: AssetInfo, metadata: Partial<AssetInfo
   };
 }
 
-function getMediaMetadata(asset: AssetInfo): Promise<Partial<AssetInfo>> {
-  const cached = mediaMetadataCache.get(asset.path);
-  if (cached) {
-    return cached;
-  }
-  const promise = probeAsset(asset).then((probed) => ({
-    durationSeconds: probed.durationSeconds,
-    videoDurationSeconds: probed.videoDurationSeconds,
-    audioDurationSeconds: probed.audioDurationSeconds,
-    width: probed.width,
-    height: probed.height,
-    hasAudio: probed.hasAudio
-  }));
-  mediaMetadataCache.set(asset.path, promise);
-  return promise;
+async function cachedFileValue<T>(cache: Map<string, FileCacheEntry<T>>, filePath: string, compute: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  const stat = await fs.stat(filePath);
+  const fingerprint = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}`;
+  const cached = cache.get(filePath);
+  if (cached?.fingerprint === fingerprint) return cached.value;
+  // Cache completed values only: cancelling one task cannot abort another task's probe.
+  const value = await compute();
+  signal.throwIfAborted();
+  if (cache.size >= 256) cache.delete(cache.keys().next().value!);
+  cache.set(filePath, { fingerprint, value });
+  return value;
+}
+
+function getMediaMetadata(asset: AssetInfo, signal: AbortSignal): Promise<Partial<AssetInfo>> {
+  return cachedFileValue(mediaMetadataCache, asset.path, async () => {
+    const probed = await probeAsset(asset, signal);
+    return {
+      durationSeconds: probed.durationSeconds, videoDurationSeconds: probed.videoDurationSeconds,
+      audioDurationSeconds: probed.audioDurationSeconds, width: probed.width, height: probed.height,
+      hasAudio: probed.hasAudio
+    };
+  }, signal);
 }
 
 function extensionFromUrl(urlString: string): string {
@@ -271,12 +297,13 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-async function downloadRemoteAsset(urlString: string, targetPath: string, redirects = 0): Promise<void> {
+async function downloadRemoteAsset(urlString: string, targetPath: string, signal: AbortSignal, redirects = 0): Promise<void> {
   if (redirects > 5) {
     throw new Error(`云端素材重定向次数过多：${urlString}`);
   }
 
   await new Promise<void>((resolve, reject) => {
+    let streaming = false;
     const url = new URL(urlString);
     const request = (url.protocol === "https:" ? https : http).get(
       url,
@@ -284,7 +311,7 @@ async function downloadRemoteAsset(urlString: string, targetPath: string, redire
         headers: {
           "User-Agent": "YiboBioMixCut/1.0"
         },
-        timeout: 30000
+        timeout: 30000, signal
       },
       (response) => {
         const status = response.statusCode ?? 0;
@@ -292,7 +319,7 @@ async function downloadRemoteAsset(urlString: string, targetPath: string, redire
         if (status >= 300 && status < 400 && location) {
           response.resume();
           const nextUrl = new URL(location, url).toString();
-          downloadRemoteAsset(nextUrl, targetPath, redirects + 1).then(resolve, reject);
+          downloadRemoteAsset(nextUrl, targetPath, signal, redirects + 1).then(resolve, reject);
           return;
         }
         if (status < 200 || status >= 300) {
@@ -301,26 +328,25 @@ async function downloadRemoteAsset(urlString: string, targetPath: string, redire
           return;
         }
 
+        streaming = true;
         const file = createWriteStream(targetPath);
-        response.pipe(file);
-        file.on("finish", () => file.close(() => resolve()));
-        file.on("error", reject);
+        pipeline(response, file, { signal }).then(() => resolve(), reject);
       }
     );
     request.on("timeout", () => request.destroy(new Error(`云端素材下载超时：${urlString}`)));
-    request.on("error", (error) => reject(new Error(`云端素材下载失败：${error.message}，${urlString}`)));
+    request.on("error", (error) => { if (!streaming) reject(new Error(`云端素材下载失败：${error.message}，${urlString}`)); });
   }).catch(async (error) => {
     await fs.unlink(targetPath).catch(() => undefined);
     throw error;
   });
 }
 
-async function resolveSourceLoudness(videoAssets: AssetInfo[]): Promise<Array<{ meanDb?: number; gainDb: number }>> {
+async function resolveSourceLoudness(videoAssets: AssetInfo[], signal: AbortSignal): Promise<Array<{ meanDb?: number; gainDb: number }>> {
   const measured: Array<VolumeStats & { gainDb: number }> = [];
   let referenceDb: number | undefined;
 
   for (const asset of videoAssets) {
-    const stats = asset.hasAudio ? await measureVolume(asset.path) : {};
+    const stats = asset.hasAudio ? await measureVolume(asset.path, signal) : {};
     if (referenceDb === undefined && stats.meanDb !== undefined && !isProbablySilent(stats)) {
       referenceDb = stats.meanDb;
     }
@@ -336,13 +362,14 @@ async function resolveSourceLoudness(videoAssets: AssetInfo[]): Promise<Array<{ 
 
 async function resolveBgmLoudness(
   tracks: MixCombinationBgmTrack[],
-  minimumTargetDb: number
+  minimumTargetDb: number,
+  signal: AbortSignal
 ): Promise<Array<{ meanDb?: number; gainDb: number }>> {
   const measured: Array<VolumeStats & { gainDb: number }> = [];
   let referenceDb: number | undefined;
 
   for (const track of tracks) {
-    const stats = track.asset.hasAudio === false ? {} : await measureVolume(track.asset.path);
+    const stats = track.asset.hasAudio === false ? {} : await measureVolume(track.asset.path, signal);
     if (referenceDb === undefined && stats.meanDb !== undefined && !isProbablySilent(stats)) {
       referenceDb = stats.meanDb;
     }
@@ -388,13 +415,8 @@ function resolveCombinationBgmTracks(config: MixProjectConfig, combination: MixC
   ];
 }
 
-function measureVolume(filePath: string): Promise<VolumeStats> {
-  const cached = loudnessCache.get(filePath);
-  if (cached) {
-    return cached;
-  }
-
-  const promise = new Promise<VolumeStats>((resolve) => {
+function measureVolume(filePath: string, signal: AbortSignal): Promise<VolumeStats> {
+  return cachedFileValue(loudnessCache, filePath, () => new Promise<VolumeStats>((resolve, reject) => {
     const child = spawn(getFfmpegPath(), [
       "-hide_banner",
       "-nostats",
@@ -408,7 +430,7 @@ function measureVolume(filePath: string): Promise<VolumeStats> {
       "-f",
       "null",
       "-"
-    ]);
+    ], { signal });
     let stderr = "";
 
     child.stderr.on("data", (chunk: Buffer) => {
@@ -418,8 +440,9 @@ function measureVolume(filePath: string): Promise<VolumeStats> {
       }
     });
 
-    child.on("error", () => resolve({}));
+    child.on("error", () => { if (!signal.aborted) resolve({}); });
     child.on("close", () => {
+      if (signal.aborted) { reject(signal.reason); return; }
       const meanMatch = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
       const maxMatch = stderr.match(/max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
       resolve({
@@ -427,46 +450,21 @@ function measureVolume(filePath: string): Promise<VolumeStats> {
         maxDb: maxMatch ? Number(maxMatch[1]) : undefined
       });
     });
-  });
-
-  loudnessCache.set(filePath, promise);
-  return promise;
+  }), signal);
 }
 
-async function repairQuietAudioIfNeeded(filePath: string): Promise<VolumeStats> {
-  const stats = await measureStableOutputVolume(filePath);
-  if (!shouldRepairQuietAudio(stats)) {
-    return stats;
-  }
-
-  const gainDb = computeLoudnessGain(stats, TARGET_AUDIBLE_MEAN_DB);
-  if (gainDb <= 0.5) {
-    return stats;
-  }
-
-  const tempPath = `${filePath}.audiofix-${process.pid}-${Date.now()}.mp4`;
-  try {
-    await runAudioRepair(filePath, tempPath, gainDb);
-    await fs.rename(tempPath, filePath);
-    loudnessCache.delete(filePath);
-    return measureVolume(filePath);
-  } catch (error) {
-    await fs.unlink(tempPath).catch(() => undefined);
-    throw error;
-  }
-}
-
-async function measureStableOutputVolume(filePath: string): Promise<VolumeStats> {
+async function measureStableOutputVolume(filePath: string, signal: AbortSignal): Promise<VolumeStats> {
   let stats: VolumeStats = {};
   // Large MP4 files can still be settling on a local or network disk just after
   // FFmpeg exits. Re-probe before reporting a false "silent" failure.
   for (let attempt = 0; attempt < 3; attempt += 1) {
     loudnessCache.delete(filePath);
-    stats = await measureVolume(filePath);
+    stats = await measureVolume(filePath, signal);
     if (!isProbablySilent(stats) || attempt === 2) {
       return stats;
     }
     await wait(300);
+    signal.throwIfAborted();
   }
   return stats;
 }
@@ -478,6 +476,10 @@ function assertOutputMediaIntegrity(
   videoAssets: AssetInfo[],
   bgmTracks: MixCombinationBgmTrack[]
 ): void {
+  const expectedDuration = videoAssets.reduce((sum, asset) => sum + resolveSegmentDuration(asset), 0);
+  if (!output.videoDurationSeconds || Math.abs(output.videoDurationSeconds - expectedDuration) > Math.max(0.25, videoAssets.length / 30)) {
+    throw new Error(`成片画面时长不完整：预期 ${expectedDuration.toFixed(2)} 秒，实际 ${(output.videoDurationSeconds ?? 0).toFixed(2)} 秒`);
+  }
   const expectsSourceAudio = config.sourceVolume > 0 && videoAssets.some((asset) => asset.hasAudio === true);
   const expectsBgmAudio = config.bgmVolume > 0 && bgmTracks.length > 0;
   if (!expectsSourceAudio && !expectsBgmAudio) {
@@ -498,53 +500,6 @@ function assertOutputMediaIntegrity(
       `成片音画时长不一致：画面 ${output.videoDurationSeconds.toFixed(2)} 秒，声音 ${output.audioDurationSeconds.toFixed(2)} 秒`
     );
   }
-}
-
-function shouldRepairQuietAudio(stats: VolumeStats): boolean {
-  if (stats.meanDb === undefined || isProbablySilent(stats)) {
-    return false;
-  }
-  return stats.meanDb < -45 || (stats.maxDb !== undefined && stats.maxDb < -25);
-}
-
-function runAudioRepair(inputPath: string, outputPath: string, gainDb: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(getFfmpegPath(), [
-      "-y",
-      "-i",
-      inputPath,
-      "-map",
-      "0:v:0",
-      "-map",
-      "0:a:0",
-      "-c:v",
-      "copy",
-      "-af",
-      `volume=${gainDb.toFixed(2)}dB,${buildFinalAudioFilterChain()}`,
-      "-c:a",
-      "aac",
-      "-movflags",
-      "+faststart",
-      outputPath
-    ]);
-    let stderr = "";
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-      if (stderr.length > 12000) {
-        stderr = stderr.slice(-12000);
-      }
-    });
-
-    child.on("error", (error) => reject(describeMissingBinary("ffmpeg", error)));
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(summarizeFfmpegFailure(stderr, `FFmpeg 音频修复退出码 ${code}`)));
-    });
-  });
 }
 
 function resolveReferenceTargetDb(referenceDb: number | undefined): number {

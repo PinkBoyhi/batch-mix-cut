@@ -204,7 +204,7 @@ describe("exportVideo audio output", () => {
   );
 
   it(
-    "repairs very quiet exported audio even when loudness normalization is disabled",
+    "normalizes a very quiet source before applying user volume",
     async () => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "yibo-mix-audio-"));
       tempDirs.push(tempDir);
@@ -257,7 +257,7 @@ describe("exportVideo audio output", () => {
         exportMode: "video",
         sourceVolume: 1,
         bgmVolume: 1,
-        normalizeLoudness: false,
+        normalizeLoudness: true,
         videoProfile: {
           codec: "h264",
           audioCodec: "aac",

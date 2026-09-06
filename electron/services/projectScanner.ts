@@ -145,7 +145,7 @@ async function scanAssets(dir: string, kind: "video" | "audio"): Promise<AssetIn
     kind
   }));
 
-  return Promise.all(assets.map(probeAsset));
+  return Promise.all(assets.map((asset) => probeAsset(asset)));
 }
 
 async function exists(filePath: string): Promise<boolean> {
