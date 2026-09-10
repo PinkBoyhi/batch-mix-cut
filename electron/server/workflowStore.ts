@@ -33,7 +33,7 @@ export class WorkflowStore extends EventEmitter {
     this.maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
   }
 
-  async initialize(): Promise<void> {
+  async initialize(resumableWorkflowIds: ReadonlySet<string> = new Set()): Promise<void> {
     try {
       const parsed = JSON.parse(await fs.readFile(this.filePath, "utf8")) as { records?: WorkflowRecord[] };
       for (const record of parsed.records ?? []) {
@@ -50,7 +50,7 @@ export class WorkflowStore extends EventEmitter {
     const now = new Date().toISOString();
     let changed = false;
     for (const [id, record] of this.records) {
-      if (record.status === "active") {
+      if (record.status === "active" && !resumableWorkflowIds.has(id)) {
         const next: WorkflowRecord = {
           ...record,
           stage: "interrupted",

@@ -59,6 +59,20 @@ describe("WorkflowStore", () => {
     expect(terminal).toEqual([record.id]);
   });
 
+  it("重启时保留已落盘且可以续跑的活动任务", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-resumable-"));
+    tempDirs.push(root);
+    const store = new WorkflowStore(root);
+    await store.initialize();
+    const record = store.create({ displayName: "可续跑任务", executionTarget: "server", exportTarget: "local", totalVideos: 6 });
+    store.update(record.id, { stage: "mixing", status: "active", progress: { current: 2, total: 6, unit: "videos", message: "正在混剪" } });
+    await store.flush();
+
+    const restarted = new WorkflowStore(root);
+    await restarted.initialize(new Set([record.id]));
+    expect(restarted.get(record.id)).toMatchObject({ stage: "mixing", status: "active", progress: { current: 2, total: 6 } });
+  });
+
   it("不会把任意额外字段写入任务记录", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-sanitize-"));
     tempDirs.push(root);

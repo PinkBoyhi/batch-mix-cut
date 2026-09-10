@@ -31,6 +31,19 @@ it("freezes the configuration used by a running batch", async () => {
   expect(vi.mocked(exportVideo).mock.calls[0][0].slots[0].assets).toHaveLength(2);
   expect(vi.mocked(exportVideo).mock.calls[0][0].sourceVolume).toBe(1);
 });
+it("resumes after a server restart without re-encoding published outputs", async () => {
+  await fs.mkdir(path.join(dir, "videos"));
+  await fs.writeFile(path.join(dir, "videos/result_001.mp4"), "published-video");
+  await fs.writeFile(path.join(dir, "videos/result_002.mp4.crash.partial"), "incomplete-video");
+  const manager = new JobManager(); const done = terminal(manager);
+  const started = await manager.start(config, { resumeExistingOutputs: true });
+  expect(started.completed).toBe(1);
+  const result = await done;
+  expect(result.status).toBe("completed");
+  expect(result.completed).toBe(2);
+  expect(exportVideo).toHaveBeenCalledTimes(1);
+  await expect(fs.stat(path.join(dir, "videos/result_002.mp4.crash.partial"))).rejects.toThrow();
+});
 it("does not count user cancellation as an export failure", async () => {
   const manager = new JobManager(); const done = terminal(manager);
   await manager.start(config); await manager.stop();

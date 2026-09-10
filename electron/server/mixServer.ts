@@ -11,6 +11,7 @@ import { YunguanjiaClient } from "../services/yunguanjiaClient.js";
 import { resolveWorkflowTitle } from "../services/workflowTitle.js";
 import { DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_JS } from "./dashboardPage.js";
 import { FeishuNotifier } from "./feishuNotifier.js";
+import { ServerJobStore, type PersistedServerJob } from "./serverJobStore.js";
 import { WorkflowStore } from "./workflowStore.js";
 import type {
   BatchJobSnapshot,
@@ -30,6 +31,9 @@ interface ServerJob {
   snapshot: BatchJobSnapshot;
   config: MixProjectConfig;
   projectKey: string;
+  resumeExistingOutputs: boolean;
+  restorePaused: boolean;
+  restoredTerminal: boolean;
   createdAt: string;
   started: boolean;
   workflowId: string;
@@ -48,8 +52,10 @@ const projectCleanupIntervalMs = 60 * 60 * 1000;
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
 const audioPipelineVersion = 6;
 const combinationPipelineVersion = 3;
+const jobRecoveryVersion = 1;
 const jobs = new Map<string, ServerJob>();
 const workflowStore = new WorkflowStore(workspaceRoot);
+const jobStore = new ServerJobStore(workspaceRoot);
 const feishuNotifier = new FeishuNotifier({
   webhook: process.env.FEISHU_BOT_WEBHOOK,
   secret: process.env.FEISHU_BOT_SECRET,
@@ -63,12 +69,11 @@ let dispatchingJobs = false;
 async function main(): Promise<void> {
   await fs.mkdir(path.join(workspaceRoot, "uploads"), { recursive: true });
   await fs.mkdir(path.join(workspaceRoot, "projects"), { recursive: true });
-  await cleanupExpiredServerProjects();
-  const cleanupTimer = setInterval(() => {
-    void cleanupExpiredServerProjects();
-  }, projectCleanupIntervalMs);
-  cleanupTimer.unref();
-  await workflowStore.initialize();
+  const persistedJobs = await loadPersistedServerJobs();
+  const resumableWorkflowIds = persistedJobs
+    .filter((record) => ["queued", "running", "paused"].includes(record.snapshot.status))
+    .map((record) => record.workflowId);
+  await workflowStore.initialize(new Set(resumableWorkflowIds));
   workflowStore.on("terminal", (record) => {
     if (!shouldNotifyWorkflow(record)) {
       workflowStore.setNotification(record.id, "disabled");
@@ -85,6 +90,12 @@ async function main(): Promise<void> {
       });
     }
   }
+  await restoreServerJobs(persistedJobs);
+  await cleanupExpiredServerProjects();
+  const cleanupTimer = setInterval(() => {
+    void cleanupExpiredServerProjects();
+  }, projectCleanupIntervalMs);
+  cleanupTimer.unref();
 
   const server = http.createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
@@ -97,6 +108,15 @@ async function main(): Promise<void> {
       }
     });
   });
+
+  const shutdown = async (signal: string) => {
+    console.warn(`收到 ${signal}，正在保存服务器任务队列`);
+    await Promise.allSettled([jobStore.flush(), workflowStore.flush()]);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2_000).unref();
+  };
+  process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+  process.once("SIGINT", () => { void shutdown("SIGINT"); });
 
   server.listen(port, host, () => {
     console.log(`医博生物混剪服务器已启动：http://${host}:${port}`);
@@ -146,6 +166,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       authRequired: true,
       audioPipelineVersion,
       combinationPipelineVersion,
+      jobRecoveryVersion,
       jobs: jobs.size,
       activeJobs: countActiveJobs(),
       queuedJobs: countQueuedJobs(),
@@ -299,6 +320,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           finishedAt: new Date().toISOString()
         };
         syncWorkflowFromJob(job, job.snapshot);
+        queuePersistServerJob(job);
         await dispatchQueuedJobs();
         sendJson(response, 200, { ok: true, snapshot: job.snapshot });
         return;
@@ -311,6 +333,22 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     if (request.method === "POST" && action === "retry") {
       if (!job.started) {
         sendJson(response, 409, { ok: false, error: "服务器任务尚未开始，暂时不能重试" });
+        return;
+      }
+      if (job.restoredTerminal && job.snapshot.status === "failed") {
+        job.started = false;
+        job.restoredTerminal = false;
+        job.resumeExistingOutputs = true;
+        job.snapshot = {
+          ...job.snapshot,
+          status: "queued",
+          message: "失败任务已重新加入队列，将保留已有成片并重试缺失项",
+          finishedAt: undefined
+        };
+        syncWorkflowFromJob(job, job.snapshot);
+        queuePersistServerJob(job);
+        await dispatchQueuedJobs();
+        sendJson(response, 200, { ok: true, snapshot: job.snapshot });
         return;
       }
       job.snapshot = await job.manager.retryFailures();
@@ -402,7 +440,6 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
     totalVideos: config.maxCombinations
   });
   const manager = new JobManager();
-  let loggedFailureCount = 0;
   const job: ServerJob = {
     id,
     manager,
@@ -418,16 +455,28 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
     },
     config,
     projectKey: normalizeProjectKey(config.projectDir),
+    resumeExistingOutputs: false,
+    restorePaused: false,
+    restoredTerminal: false,
     createdAt: new Date().toISOString(),
     started: false,
     workflowId: workflow.id,
     desktopTracked: Boolean(existingWorkflow)
   };
-  jobs.set(id, job);
+  registerServerJob(job);
+  await persistServerJob(job);
   refreshQueuedJobPositions();
-  manager.on("update", (snapshot: BatchJobSnapshot) => {
+  await dispatchQueuedJobs();
+  return job;
+}
+
+function registerServerJob(job: ServerJob): void {
+  let loggedFailureCount = job.snapshot.failures.length;
+  jobs.set(job.id, job);
+  job.manager.on("update", (snapshot: BatchJobSnapshot) => {
     job.snapshot = snapshot;
     syncWorkflowFromJob(job, snapshot);
+    queuePersistServerJob(job);
     if (snapshot.failures.length > loggedFailureCount) {
       const failure = snapshot.failures.at(-1);
       loggedFailureCount = snapshot.failures.length;
@@ -435,13 +484,93 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
     }
     if (isTerminalStatus(snapshot.status)) {
       console.log(`服务器任务结束：${job.id}，完成 ${snapshot.completed}，失败 ${snapshot.failed}，${snapshot.message}`);
-    }
-    if (isTerminalStatus(snapshot.status)) {
       void dispatchQueuedJobs();
     }
   });
+}
+
+async function loadPersistedServerJobs(): Promise<PersistedServerJob[]> {
+  const records = await jobStore.load();
+  const persisted: PersistedServerJob[] = [];
+  for (const record of records) {
+    try {
+      await validateMixConfig(record.config);
+      persisted.push(record);
+    } catch (error) {
+      console.error(`服务器任务 ${record.id} 的项目文件已不可用：${error instanceof Error ? error.message : String(error)}`);
+      await jobStore.remove(record.id);
+    }
+  }
+  return persisted;
+}
+
+async function restoreServerJobs(records: PersistedServerJob[]): Promise<void> {
+  for (const record of records) {
+    const shouldResume = ["queued", "running", "paused"].includes(record.snapshot.status);
+    const wasStopping = record.snapshot.status === "stopping";
+    const job: ServerJob = {
+      id: record.id,
+      manager: new JobManager(),
+      snapshot: shouldResume ? {
+        ...record.snapshot,
+        status: "queued",
+        message: "混剪服务器已重启，任务正在恢复并核对已有成片",
+        finishedAt: undefined
+      } : wasStopping ? {
+        ...record.snapshot,
+        status: "idle",
+        message: "任务已停止",
+        finishedAt: record.snapshot.finishedAt ?? new Date().toISOString()
+      } : record.snapshot,
+      config: record.config,
+      projectKey: normalizeProjectKey(record.config.projectDir),
+      resumeExistingOutputs: shouldResume,
+      restorePaused: shouldResume && record.snapshot.status === "paused",
+      restoredTerminal: !shouldResume,
+      createdAt: record.createdAt,
+      started: !shouldResume,
+      workflowId: record.workflowId,
+      desktopTracked: record.desktopTracked
+    };
+    registerServerJob(job);
+    if (shouldResume) {
+      workflowStore.update(job.workflowId, {
+        stage: "queued",
+        status: "active",
+        error: "",
+        progress: {
+          current: record.snapshot.completed,
+          total: record.snapshot.total || record.config.maxCombinations,
+          unit: "videos",
+          message: job.snapshot.message
+        }
+      });
+    }
+    queuePersistServerJob(job);
+  }
+  if (records.length > 0) {
+    console.log(`已从磁盘载入 ${records.length} 个服务器混剪任务`);
+  }
+  refreshQueuedJobPositions();
   await dispatchQueuedJobs();
-  return job;
+}
+
+async function persistServerJob(job: ServerJob): Promise<void> {
+  await jobStore.save({
+    version: 1,
+    id: job.id,
+    config: structuredClone(job.config),
+    snapshot: structuredClone(job.snapshot),
+    createdAt: job.createdAt,
+    workflowId: job.workflowId,
+    desktopTracked: job.desktopTracked
+  });
+}
+
+function queuePersistServerJob(job: ServerJob): void {
+  void persistServerJob(job).catch((error) => {
+    console.error(`服务器任务 ${job.id} 持久化失败：${error instanceof Error ? error.message : String(error)}`);
+  });
 }
 
 async function dispatchQueuedJobs(): Promise<void> {
@@ -463,6 +592,7 @@ async function dispatchQueuedJobs(): Promise<void> {
         return;
       }
       nextJob.started = true;
+      nextJob.restoredTerminal = false;
       refreshQueuedJobPositions();
       workflowStore.update(nextJob.workflowId, {
         stage: "mixing",
@@ -470,7 +600,12 @@ async function dispatchQueuedJobs(): Promise<void> {
         progress: { current: 0, total: 0, percent: 0, unit: "videos", message: "服务器已分配资源，正在启动混剪" }
       });
       try {
-        nextJob.snapshot = await nextJob.manager.start(nextJob.config);
+        nextJob.snapshot = await nextJob.manager.start(nextJob.config, { resumeExistingOutputs: nextJob.resumeExistingOutputs });
+        nextJob.resumeExistingOutputs = false;
+        if (nextJob.restorePaused) {
+          nextJob.restorePaused = false;
+          nextJob.snapshot = await nextJob.manager.pause();
+        }
       } catch (error) {
         nextJob.snapshot = {
           ...nextJob.snapshot,
@@ -479,6 +614,7 @@ async function dispatchQueuedJobs(): Promise<void> {
           finishedAt: new Date().toISOString()
         };
         syncWorkflowFromJob(nextJob, nextJob.snapshot);
+        queuePersistServerJob(nextJob);
       }
     }
   } finally {
@@ -497,6 +633,7 @@ function refreshQueuedJobPositions(): void {
       message: describeQueuePosition(position, queuedJobs.length, maxConcurrentJobs)
     };
     syncWorkflowFromJob(job, job.snapshot);
+    queuePersistServerJob(job);
   });
 }
 
@@ -846,6 +983,13 @@ async function cleanupExpiredServerProjects(): Promise<void> {
   );
   if (removed > 0) {
     console.log(`已自动清理 ${removed} 个超过 ${projectRetentionHours} 小时的服务器项目`);
+  }
+  for (const [jobId, job] of jobs) {
+    if (!isTerminalStatus(job.snapshot.status)) continue;
+    const projectExists = await fs.stat(job.config.projectDir).then((stat) => stat.isDirectory(), () => false);
+    if (projectExists) continue;
+    jobs.delete(jobId);
+    await jobStore.remove(jobId);
   }
 }
 

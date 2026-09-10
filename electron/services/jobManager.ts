@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
+import path from "node:path";
 import type {
   BatchJobSnapshot,
   JobFailure,
@@ -10,6 +11,10 @@ import { assertOutputAvailable } from "./outputFiles.js";
 import { createCombinations } from "./combinator.js";
 import { exportVideo, type ExportHandle } from "./ffmpeg.js";
 import { generateJianyingDraft } from "./jianyingDraft.js";
+
+export interface JobStartOptions {
+  resumeExistingOutputs?: boolean;
+}
 
 export class JobManager extends EventEmitter {
   private snapshot: BatchJobSnapshot = createEmptySnapshot();
@@ -25,7 +30,7 @@ export class JobManager extends EventEmitter {
     return structuredClone(this.snapshot);
   }
 
-  async start(config: MixProjectConfig): Promise<BatchJobSnapshot> {
+  async start(config: MixProjectConfig, options: JobStartOptions = {}): Promise<BatchJobSnapshot> {
     if (this.running) {
       throw new Error("已有任务正在运行");
     }
@@ -41,6 +46,11 @@ export class JobManager extends EventEmitter {
       config.bgmTracks
     );
     if (this.combinations.length === 0) throw new Error("没有可导出的组合，请检查段落素材和最大数量");
+    if (options.resumeExistingOutputs) await cleanupStalePartialOutputs(config.outputDir);
+    const pendingCombinations = options.resumeExistingOutputs
+      ? await selectPendingCombinations(config, this.combinations)
+      : this.combinations;
+    const recoveredCount = this.combinations.length - pendingCombinations.length;
     this.failedCombinationIds.clear();
     this.stopped = false;
     this.paused = false;
@@ -49,15 +59,15 @@ export class JobManager extends EventEmitter {
       id: `job_${Date.now()}`,
       status: "running",
       total: this.combinations.length,
-      completed: 0,
+      completed: recoveredCount,
       failed: 0,
-      message: "任务已开始",
+      message: recoveredCount > 0 ? `服务器重启恢复：已确认 ${recoveredCount} 条成片，继续处理剩余 ${pendingCombinations.length} 条` : "任务已开始",
       failures: [],
       startedAt: new Date().toISOString()
     };
     this.emitUpdate();
 
-    void this.run(this.combinations);
+    void this.run(pendingCombinations);
     return this.getSnapshot();
   }
 
@@ -205,6 +215,41 @@ export class JobManager extends EventEmitter {
   private emitUpdate(): void {
     this.emit("update", this.getSnapshot());
   }
+}
+
+async function selectPendingCombinations(config: MixProjectConfig, combinations: MixCombination[]): Promise<MixCombination[]> {
+  const pending: MixCombination[] = [];
+  for (const combination of combinations) {
+    if (!(await hasPublishedOutput(config, combination))) pending.push(combination);
+  }
+  return pending;
+}
+
+async function hasPublishedOutput(config: MixProjectConfig, combination: MixCombination): Promise<boolean> {
+  const videoReady = config.exportMode === "draft" || await isPublishedFile(combination.targetVideoPath);
+  const draftReady = config.exportMode === "video" || await pathExists(combination.targetDraftPath);
+  return videoReady && draftReady;
+}
+
+async function isPublishedFile(filePath: string): Promise<boolean> {
+  const stat = await fs.stat(filePath).catch(() => undefined);
+  return Boolean(stat?.isFile() && stat.size > 0);
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  return fs.stat(filePath).then(() => true, () => false);
+}
+
+async function cleanupStalePartialOutputs(outputDir: string): Promise<void> {
+  const entries = await fs.readdir(outputDir, { withFileTypes: true }).catch(() => []);
+  await Promise.all(entries.map(async (entry) => {
+    const entryPath = path.join(outputDir, entry.name);
+    if (entry.isDirectory()) {
+      await cleanupStalePartialOutputs(entryPath);
+    } else if (entry.isFile() && entry.name.includes(".partial")) {
+      await fs.rm(entryPath, { force: true });
+    }
+  }));
 }
 
 function createEmptySnapshot(): BatchJobSnapshot {
