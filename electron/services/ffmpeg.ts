@@ -29,6 +29,7 @@ const TARGET_PEAK_DB = -1.5;
 const MIN_GAIN_DB = -18;
 const MAX_GAIN_DB = 60;
 const SILENCE_PEAK_DB = -85;
+const ffmpegThreadLimit = readPositiveInteger(process.env.MIX_FFMPEG_THREADS);
 
 export function exportVideo(config: MixProjectConfig, combination: MixCombination): ExportHandle {
   const controller = new AbortController();
@@ -64,6 +65,9 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       : [];
 
     const args: string[] = ["-y"];
+    if (ffmpegThreadLimit) {
+      args.push("-filter_complex_threads", String(Math.max(1, Math.floor(ffmpegThreadLimit / 2))));
+    }
     for (const asset of videoAssets) {
       args.push("-i", asset.path);
     }
@@ -146,6 +150,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       "libx264",
       "-preset",
       config.videoProfile.preset,
+      ...(ffmpegThreadLimit ? ["-threads", String(ffmpegThreadLimit)] : []),
       "-crf",
       String(config.videoProfile.crf),
       "-c:a",
@@ -199,6 +204,12 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
   });
 
   return { promise, cancel: () => controller.abort() };
+}
+
+function readPositiveInteger(value: string | undefined): number | undefined {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
+  return Math.floor(parsed);
 }
 
 async function ensureLocalAsset(asset: AssetInfo, outputDir: string, signal: AbortSignal): Promise<AssetInfo> {

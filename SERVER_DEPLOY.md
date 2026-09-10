@@ -10,6 +10,7 @@ MIX_SERVER_HOST=0.0.0.0 \
 MIX_SERVER_PORT=8787 \
 MIX_SERVER_TOKEN="替换为一段随机长密码" \
 MIX_SERVER_MAX_CONCURRENT_JOBS=2 \
+MIX_FFMPEG_THREADS=8 \
 FEISHU_BOT_WEBHOOK="https://open.feishu.cn/open-apis/bot/v2/hook/替换为机器人地址" \
 FEISHU_BOT_SECRET="机器人开启签名校验时填写，否则留空" \
 FEISHU_APP_ID="也可以填写飞书自建应用 App ID" \
@@ -66,14 +67,16 @@ x-mix-token: <启动日志里的 Token>
 
 - `MIX_SERVER_PROJECT_RETENTION_HOURS`：项目保留小时数，设为 `0` 可关闭自动清理。
 - `MIX_SERVER_MIN_FREE_GB`：启动新任务前需保留的最小可用空间，默认 `30`。
+- `MIX_FFMPEG_THREADS`：每个 FFmpeg 编码任务最多使用的线程数；16 核 32 线程且同时运行 2 个项目时建议从 `8` 开始。
 
 ## 任务分身与并发
 
 - 桌面端点击“新建任务分身”可创建独立项目窗口；每个窗口可使用不同素材、输出目录和服务器设置。
-- 服务器默认同时执行 `2` 个独立项目，由 `MIX_SERVER_MAX_CONCURRENT_JOBS` 调整。
-- 超出并发数的任务会显示“正在等待服务器分身”，当前面项目完成后自动开始。
+- 服务器默认同时执行 `2` 个独立项目，由 `MIX_SERVER_MAX_CONCURRENT_JOBS` 调整；两个槽位不会运行同一个项目目录。
+- 每次桌面端提交都会上传到独立项目目录。服务器会校验素材、BGM、模板和输出路径，拒绝跨项目读取或写入。
+- 超出并发数的任务会显示当前排队位次，前面项目完成后自动开始；同一项目重复提交时也必须排队。
 - 单个项目内部仍按组合顺序导出，避免一个项目同时启动大量 FFmpeg。
-- 4 核 CPU 建议设置 `1-2`，8 核及以上可从 `2-3` 开始测试；高分辨率、高码率素材需要降低并发数。
+- 4 核 CPU 建议设置 `1` 个并发；8 核及以上可从 `2` 开始测试。高分辨率、高码率素材应降低并发数或设置 `MIX_FFMPEG_THREADS`。
 
 ## 安全建议
 

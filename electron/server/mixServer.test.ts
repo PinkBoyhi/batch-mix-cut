@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { WorkflowRecord } from "../../src/shared/types.js";
-import { cleanupExpiredProjects, resolveCloudUploadVideos, shouldNotifyWorkflow } from "./mixServer.js";
+import type { MixProjectConfig, WorkflowRecord } from "../../src/shared/types.js";
+import { cleanupExpiredProjects, describeQueuePosition, findRunnableProjectIndex, resolveCloudUploadVideos, shouldNotifyWorkflow, validateProjectIsolation } from "./mixServer.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -89,6 +89,39 @@ describe("shouldNotifyWorkflow", () => {
   });
 });
 
+describe("服务器并发项目隔离", () => {
+  it("显示稳定且明确的排队位置", () => {
+    expect(describeQueuePosition(2, 5, 2)).toBe("服务器繁忙，当前排队第 2/5 位；最多同时处理 2 个不同项目");
+  });
+
+  it("跳过与运行槽位相同的项目，选择另一个项目", () => {
+    expect(findRunnableProjectIndex(["project-a", "project-b"], new Set(["project-a"]))).toBe(1);
+    expect(findRunnableProjectIndex(["project-a", "project-a"], new Set(["project-a"]))).toBe(-1);
+  });
+
+  it("允许素材和输出都位于当前项目目录", () => {
+    const projectsRoot = path.join(os.tmpdir(), "mix-work", "projects");
+    const projectRoot = path.join(projectsRoot, "project-a");
+    expect(() => validateProjectIsolation(projectConfig(projectRoot), projectsRoot)).not.toThrow();
+  });
+
+  it("拒绝读取其他项目的素材", () => {
+    const projectsRoot = path.join(os.tmpdir(), "mix-work", "projects");
+    const projectRoot = path.join(projectsRoot, "project-a");
+    const config = projectConfig(projectRoot);
+    config.slots[0].assets[0].path = path.join(projectsRoot, "project-b", "source.mp4");
+    expect(() => validateProjectIsolation(config, projectsRoot)).toThrow("不属于当前服务器项目");
+  });
+
+  it("拒绝把成片写入其他项目", () => {
+    const projectsRoot = path.join(os.tmpdir(), "mix-work", "projects");
+    const projectRoot = path.join(projectsRoot, "project-a");
+    const config = projectConfig(projectRoot);
+    config.outputDir = path.join(projectsRoot, "project-b", "outputs");
+    expect(() => validateProjectIsolation(config, projectsRoot)).toThrow("输出目录不属于当前服务器项目");
+  });
+});
+
 function workflowRecord(overrides: Partial<WorkflowRecord>): WorkflowRecord {
   return {
     id: "wf-1",
@@ -106,5 +139,31 @@ function workflowRecord(overrides: Partial<WorkflowRecord>): WorkflowRecord {
     timeline: [],
     videos: [],
     ...overrides
+  };
+}
+
+function projectConfig(projectRoot: string): MixProjectConfig {
+  const source = {
+    id: "source-1",
+    path: path.join(projectRoot, "segments", "source.mp4"),
+    name: "source.mp4",
+    kind: "video" as const
+  };
+  return {
+    projectDir: projectRoot,
+    outputDir: path.join(projectRoot, "outputs"),
+    slots: [{ name: "开头", assets: [source], sortOrder: 0 }],
+    bgmAssets: [],
+    bgmRange: { fadeInSeconds: 0, fadeOutSeconds: 0 },
+    bgmTracks: [],
+    maxCombinations: 20,
+    outputNamePattern: "mix_{index}",
+    exportMode: "video",
+    sourceVolume: 1,
+    bgmVolume: 0.7,
+    normalizeLoudness: true,
+    videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 23, canvasMode: "vertical_9_16" },
+    exportTarget: "local",
+    draftSlots: []
   };
 }

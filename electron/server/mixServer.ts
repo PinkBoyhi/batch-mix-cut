@@ -29,6 +29,7 @@ interface ServerJob {
   manager: JobManager;
   snapshot: BatchJobSnapshot;
   config: MixProjectConfig;
+  projectKey: string;
   createdAt: string;
   started: boolean;
   workflowId: string;
@@ -149,6 +150,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       activeJobs: countActiveJobs(),
       queuedJobs: countQueuedJobs(),
       maxConcurrentJobs,
+      schedulingPolicy: "fifo-distinct-projects",
       projectRetentionHours,
       storage
     });
@@ -415,12 +417,14 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
       startedAt: new Date().toISOString()
     },
     config,
+    projectKey: normalizeProjectKey(config.projectDir),
     createdAt: new Date().toISOString(),
     started: false,
     workflowId: workflow.id,
     desktopTracked: Boolean(existingWorkflow)
   };
   jobs.set(id, job);
+  refreshQueuedJobPositions();
   manager.on("update", (snapshot: BatchJobSnapshot) => {
     job.snapshot = snapshot;
     syncWorkflowFromJob(job, snapshot);
@@ -447,11 +451,19 @@ async function dispatchQueuedJobs(): Promise<void> {
   dispatchingJobs = true;
   try {
     while (countActiveJobs() < maxConcurrentJobs) {
-      const nextJob = Array.from(jobs.values()).find((job) => !job.started && job.snapshot.status === "queued");
+      const activeProjectKeys = new Set(
+        Array.from(jobs.values())
+          .filter((job) => job.started && !isTerminalStatus(job.snapshot.status))
+          .map((job) => job.projectKey)
+      );
+      const queuedJobs = Array.from(jobs.values()).filter((job) => !job.started && job.snapshot.status === "queued");
+      const nextIndex = findRunnableProjectIndex(queuedJobs.map((job) => job.projectKey), activeProjectKeys);
+      const nextJob = nextIndex >= 0 ? queuedJobs[nextIndex] : undefined;
       if (!nextJob) {
         return;
       }
       nextJob.started = true;
+      refreshQueuedJobPositions();
       workflowStore.update(nextJob.workflowId, {
         stage: "mixing",
         status: "active",
@@ -470,8 +482,33 @@ async function dispatchQueuedJobs(): Promise<void> {
       }
     }
   } finally {
+    refreshQueuedJobPositions();
     dispatchingJobs = false;
   }
+}
+
+function refreshQueuedJobPositions(): void {
+  const queuedJobs = Array.from(jobs.values()).filter((job) => !job.started && job.snapshot.status === "queued");
+  queuedJobs.forEach((job, index) => {
+    const position = index + 1;
+    job.snapshot = {
+      ...job.snapshot,
+      total: job.snapshot.total || job.config.maxCombinations || 0,
+      message: describeQueuePosition(position, queuedJobs.length, maxConcurrentJobs)
+    };
+    syncWorkflowFromJob(job, job.snapshot);
+  });
+}
+
+export function describeQueuePosition(position: number, queuedTotal: number, concurrentSlots: number): string {
+  const safePosition = Math.max(1, Math.floor(position));
+  const safeTotal = Math.max(safePosition, Math.floor(queuedTotal));
+  const safeSlots = Math.max(1, Math.floor(concurrentSlots));
+  return `服务器繁忙，当前排队第 ${safePosition}/${safeTotal} 位；最多同时处理 ${safeSlots} 个不同项目`;
+}
+
+export function findRunnableProjectIndex(queuedProjectKeys: readonly string[], activeProjectKeys: ReadonlySet<string>): number {
+  return queuedProjectKeys.findIndex((projectKey) => !activeProjectKeys.has(projectKey));
 }
 
 function countActiveJobs(): number {
@@ -700,6 +737,7 @@ async function unzip(zipPath: string, targetDir: string): Promise<void> {
 
 async function validateMixConfig(config: MixProjectConfig): Promise<void> {
   validateConfigPaths(config);
+  validateProjectIsolation(config, path.join(workspaceRoot, "projects"));
   if (config.slots.length === 0) {
     throw new Error("至少需要添加一个视频段落后才能开始服务器混剪");
   }
@@ -722,6 +760,46 @@ async function validateMixConfig(config: MixProjectConfig): Promise<void> {
       throw new Error(`服务器素材不存在或上传不完整：${asset.name}`);
     }
   }
+}
+
+export function validateProjectIsolation(config: MixProjectConfig, projectsRoot: string): void {
+  const resolvedProjectsRoot = path.resolve(projectsRoot);
+  const projectRoot = path.resolve(config.projectDir);
+  if (projectRoot === resolvedProjectsRoot || !isPathInside(projectRoot, resolvedProjectsRoot)) {
+    throw new Error("服务器项目目录必须是 projects 下的独立子目录");
+  }
+
+  assertProjectPath(config.outputDir, projectRoot, "输出目录");
+  if (config.templateDraftPath) {
+    assertProjectPath(config.templateDraftPath, projectRoot, "剪映模板");
+  }
+  for (const slot of config.slots) {
+    for (const asset of slot.assets) {
+      if (!/^https?:\/\//i.test(asset.path)) assertProjectPath(asset.path, projectRoot, `段落 ${slot.name} 素材`);
+    }
+  }
+  for (const asset of config.bgmAssets) {
+    if (!/^https?:\/\//i.test(asset.path)) assertProjectPath(asset.path, projectRoot, "BGM 素材");
+  }
+  for (const track of config.bgmTracks ?? []) {
+    for (const asset of track.assets) {
+      if (!/^https?:\/\//i.test(asset.path)) assertProjectPath(asset.path, projectRoot, `BGM ${track.name} 素材`);
+    }
+  }
+}
+
+function assertProjectPath(filePath: string, projectRoot: string, label: string): void {
+  if (!isPathInside(path.resolve(filePath), projectRoot)) {
+    throw new Error(`${label}不属于当前服务器项目，已拒绝启动以避免项目之间互相干扰`);
+  }
+}
+
+function isPathInside(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+function normalizeProjectKey(projectDir: string): string {
+  return path.resolve(projectDir);
 }
 
 function validateConfigPaths(config: MixProjectConfig): void {
