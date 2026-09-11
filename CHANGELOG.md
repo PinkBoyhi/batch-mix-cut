@@ -1,5 +1,10 @@
 # 更新日志
 
+## 0.1.57
+
+- 修复关闭主窗口后清理任务实例时继续读取已销毁 `webContents`，导致主进程弹出 `TypeError: Object has been destroyed` 的问题。
+- Windows 与 macOS 发布流程新增主窗口关闭回归，确保窗口销毁时不会再触发 JavaScript 主进程异常。
+
 ## 0.1.56
 
 - 云管家登录区新增“退出当前账号”，会清除本机保存的账号身份、网页上传授权和 OpenAPI 临时令牌。

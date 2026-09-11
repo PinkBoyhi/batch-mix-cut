@@ -61,6 +61,9 @@ jobs:
       - name: Verify desktop UI workflow
         run: pnpm smoke:ui
 
+      - name: Verify main window closes cleanly
+        run: pnpm smoke:window-close
+
       - name: Verify full local mixing workflow
         run: pnpm smoke:workflow:local
 
@@ -126,6 +129,9 @@ jobs:
 
       - name: Verify desktop UI workflow
         run: pnpm smoke:ui
+
+      - name: Verify main window closes cleanly
+        run: pnpm smoke:window-close
 
       - name: Verify full local mixing workflow
         run: pnpm smoke:workflow:local

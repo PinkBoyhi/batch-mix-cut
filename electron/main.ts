@@ -51,6 +51,14 @@ const updateManager = new UpdateManager(app.getVersion());
 const DEFAULT_CLOUD_LOGIN_URL = "https://sucaiwang.zhishangsoft.com/#/classification";
 const DEFAULT_CLOUD_UPLOAD_BASE_URL = "https://sucaiwang-api-elb.zhishangsoft.com";
 const PREVIEW_PROTOCOL = "batchmix-preview";
+const windowCloseSmoke = process.env.BATCH_MIX_WINDOW_CLOSE_SMOKE === "1";
+
+if (windowCloseSmoke) {
+  process.on("uncaughtException", (error) => {
+    console.error(error);
+    app.exit(1);
+  });
+}
 
 let mainWindow: BrowserWindow | undefined;
 interface TaskRuntime {
@@ -96,6 +104,7 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false
     }
   });
+  const webContentsId = window.webContents.id;
 
   if (!mainWindow) {
     mainWindow = window;
@@ -107,6 +116,10 @@ function createWindow(): BrowserWindow {
   }
 
   window.once("ready-to-show", () => {
+    if (windowCloseSmoke) {
+      window.destroy();
+      return;
+    }
     window.show();
     window.focus();
     if (process.platform === "darwin") {
@@ -114,7 +127,7 @@ function createWindow(): BrowserWindow {
     }
   });
   window.on("closed", () => {
-    const runtimePrefix = `${window.webContents.id}:`;
+    const runtimePrefix = `${webContentsId}:`;
     for (const runtimeKey of taskRuntimes.keys()) {
       if (runtimeKey.startsWith(runtimePrefix)) {
         taskRuntimes.delete(runtimeKey);
@@ -122,6 +135,10 @@ function createWindow(): BrowserWindow {
     }
     if (mainWindow === window) {
       mainWindow = BrowserWindow.getAllWindows().find((candidate) => candidate !== window);
+    }
+    if (windowCloseSmoke) {
+      console.log("主窗口关闭回归通过：窗口销毁后未访问失效的 webContents");
+      app.exit(0);
     }
   });
   return window;
