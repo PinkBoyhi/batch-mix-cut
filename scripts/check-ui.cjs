@@ -13,9 +13,11 @@ window.batchMix={
 selectDirectory:async()=>'/audit',createManualProject:async()=>({config:cfg,combinations:[combo],warnings:[]}),
 getJob:async(taskId)=>{window.audit.taskId=taskId;return ({id:'audit-job',status:'completed',total:1,completed:1,failed:0,message:'AUDIT_COMPLETE',failures:[]})},
 onJobUpdate:(cb)=>{window.audit.jobListener=cb;return ()=>{}},onCloudProgress:()=>()=>{},onUpdateStatus:()=>()=>{},
+onCloudSettingsUpdate:()=>()=>{},
 getRemoteMixSettings:async()=>({serverUrl:'http://127.0.0.1',hasToken:false}),
 getUpdateStatus:async()=>({status:'idle',currentVersion:'audit',message:'audit'}),
 getCloudSettings:async()=>({baseUrl:'',hasApiToken:false,accountKey:'test',accountName:'audit',hasUploadToken:true}),
+logoutCloudAccount:async()=>({baseUrl:'',hasApiToken:false,accountKey:'',accountName:'',hasUploadToken:false}),
 getCloudPublishProfiles:async()=>[],
 getCloudUploadLedger:async()=>{window.audit.ledgerCalls++;await new Promise(r=>setTimeout(r,100));window.audit.ledgerResolved++;return [{localPath:'/audit/videos/成品_001.mp4',url:'https://example.invalid/already-uploaded.mp4',submitted:true,requestId:'existing-request'}]},
 listCloudVideoTypes:async()=>[],listCloudVideoLabels:async()=>[],buildCombinations:async()=>[combo]
@@ -36,6 +38,7 @@ await win.webContents.executeJavaScript(`document.querySelector('button.primary-
 await waitFor("window.audit.ledgerResolved === 1 && document.body.innerText.includes('已提交')");
 const result=await win.webContents.executeJavaScript(`(()=>{const rows=[...document.querySelectorAll('tbody tr')].map(x=>x.innerText);return {ledgerCalls:window.audit.ledgerCalls,ledgerResolved:window.audit.ledgerResolved,rows,hasCompletedMessage:document.body.innerText.includes('AUDIT_COMPLETE')}})()`);
 assert.equal(result.ledgerCalls,1);assert.equal(result.ledgerResolved,1);
+assert.ok(await win.webContents.executeJavaScript(`document.body.innerText.includes('退出当前账号')`), 'Cloud logout action was not rendered');
 assert.ok(result.rows.some(row=>row.includes('已提交')), 'Upload ledger was not restored');
 assert.ok(!result.rows.some(row=>row.includes('待上传')), 'Already submitted video was reset');
 await win.webContents.executeJavaScript(`window.audit.jobListener({taskId:window.audit.taskId,executionTarget:'local',snapshot:{id:'running-job',status:'running',total:1,completed:0,failed:0,message:'running',failures:[]}})`);

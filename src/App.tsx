@@ -8,6 +8,7 @@ import {
   FolderOpen,
   ListPlus,
   LogIn,
+  LogOut,
   Music,
   Pause,
   Play,
@@ -384,6 +385,17 @@ function TaskWorkspace({
       .getCloudSettings()
       .then(setCloudSettings)
       .catch((err) => setCloudStatus(toMessage(err)));
+    return api.onCloudSettingsUpdate((settings) => {
+      setCloudSettings(settings);
+      if (!settings.accountKey) {
+        setCloudPhone("");
+        setCloudVideos([]);
+        setCloudVideoTotal(0);
+        setCloudVideoTypes([]);
+        setCloudVideoLabels([]);
+        setCloudQuery((current) => ({ ...current, pageNo: 1, accountKeys: undefined }));
+      }
+    });
   }, [api]);
 
   useEffect(() => {
@@ -1009,19 +1021,32 @@ function TaskWorkspace({
     }
   }
 
+  async function logoutCloudAccount() {
+    if (!api) return;
+    setCloudBusy(true);
+    setCloudStatus(undefined);
+    try {
+      const next = await api.logoutCloudAccount();
+      setCloudSettings(next);
+      setCloudPhone("");
+      setCloudVideos([]);
+      setCloudVideoTotal(0);
+      setCloudVideoTypes([]);
+      setCloudVideoLabels([]);
+      setCloudQuery((current) => ({ ...current, pageNo: 1, accountKeys: undefined }));
+      setCloudStatus("已退出云管家账号，并清除本机保存的账号身份和上传授权。");
+    } catch (err) {
+      setCloudStatus(toMessage(err));
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
   async function persistCloudSettings(): Promise<CloudSettingsView> {
     if (!api) {
       throw new Error("当前页面没有连接到 Electron 本地能力。");
     }
-    const next = await api.saveCloudSettings({
-      baseUrl: "",
-      companyKey: "",
-      accountKey: cloudSettings.accountKey,
-      accountName: cloudSettings.accountName,
-      accountLogin: cloudSettings.accountLogin,
-      uploadBaseUrl: ""
-    });
-    return next;
+    return api.getCloudSettings();
   }
 
   async function loadCloudTaxonomy(videoType = cloudImportMeta.videoType) {
@@ -2028,6 +2053,15 @@ function TaskWorkspace({
                 <button className="inline-command" type="button" onClick={verifyCloudPhone} disabled={cloudBusy || !api}>
                   <LogIn size={16} />
                   <span>验证手机号</span>
+                </button>
+                <button
+                  className="secondary-inline"
+                  type="button"
+                  onClick={() => void logoutCloudAccount()}
+                  disabled={cloudBusy || !api || (!cloudSettings.accountKey && !cloudSettings.hasUploadToken)}
+                >
+                  <LogOut size={16} />
+                  <span>退出当前账号</span>
                 </button>
               </div>
               {cloudStatus && <p className="cloud-status">{cloudStatus}</p>}

@@ -35,6 +35,7 @@ import type {
   CloudUploadProgress,
   CloudPublishProfileInput,
   CloudSettings,
+  CloudSettingsView,
   CloudVideoListQuery,
   MixProjectConfig,
   RemoteMixSettings,
@@ -206,6 +207,14 @@ function getTaskRuntime(event: IpcMainInvokeEvent, taskId: string): TaskRuntime 
 
 function getEventWindow(event: IpcMainInvokeEvent): BrowserWindow | undefined {
   return BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+}
+
+function broadcastCloudSettings(settings: CloudSettingsView): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send("cloud:settings-update", settings);
+    }
+  }
 }
 
 function registerIpc(): void {
@@ -381,13 +390,30 @@ function registerIpc(): void {
   ipcMain.handle("update:get-release-notes", async () => updateManager.getReleaseNotes());
 
   ipcMain.handle("cloud:get-settings", async () => cloudClient.getSettingsView());
-  ipcMain.handle("cloud:save-settings", async (_event, settings: CloudSettings) => cloudClient.saveSettings(settings));
+  ipcMain.handle("cloud:save-settings", async (_event, settings: CloudSettings) => {
+    const next = await cloudClient.saveSettings(settings);
+    broadcastCloudSettings(next);
+    return next;
+  });
+  ipcMain.handle("cloud:logout", async () => {
+    const next = await cloudClient.logout();
+    broadcastCloudSettings(next);
+    return next;
+  });
   ipcMain.handle("cloud:publish-profiles", async () => cloudPublishProfileStore.list());
   ipcMain.handle("cloud:save-publish-profile", async (_event, profile: CloudPublishProfileInput) => cloudPublishProfileStore.save(profile));
   ipcMain.handle("cloud:delete-publish-profile", async (_event, profileId: string) => cloudPublishProfileStore.delete(profileId));
   ipcMain.handle("cloud:test-connection", async () => cloudClient.testConnection());
-  ipcMain.handle("cloud:capture-upload-token", async (event, loginUrl?: string) => captureCloudUploadToken(loginUrl, getEventWindow(event)));
-  ipcMain.handle("cloud:verify-phone", async (_event, phone: string) => cloudClient.verifyPhone(phone));
+  ipcMain.handle("cloud:capture-upload-token", async (event, loginUrl?: string) => {
+    const next = await captureCloudUploadToken(loginUrl, getEventWindow(event));
+    broadcastCloudSettings(next);
+    return next;
+  });
+  ipcMain.handle("cloud:verify-phone", async (_event, phone: string) => {
+    const next = await cloudClient.verifyPhone(phone);
+    broadcastCloudSettings(next);
+    return next;
+  });
   ipcMain.handle("cloud:list-videos", async (_event, query: CloudVideoListQuery) => cloudClient.listVideos(query));
   ipcMain.handle("cloud:list-video-types", async (_event, videoType?: number) => cloudClient.listVideoTypes(videoType));
   ipcMain.handle("cloud:list-video-labels", async (_event, query?: { oneLevelTypeId?: number; twoLevelTypeIds?: string; videoType?: number }) => {
@@ -609,11 +635,11 @@ async function reportCloudFailure(
   runtime.monitorClient.reset();
 }
 
-async function captureCloudUploadToken(loginUrl?: string, parentWindow?: BrowserWindow) {
+async function captureCloudUploadToken(loginUrl?: string, parentWindow?: BrowserWindow): Promise<CloudSettingsView> {
   const settings = await cloudClient.getSettingsView();
   const startUrl = normalizeLoginUrl(loginUrl || DEFAULT_CLOUD_LOGIN_URL);
 
-  return new Promise((resolve, reject) => {
+  return new Promise<CloudSettingsView>((resolve, reject) => {
     const captureWindow = new BrowserWindow({
       width: 1180,
       height: 820,

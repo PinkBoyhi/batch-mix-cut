@@ -6,6 +6,7 @@ import type {
   CloudUploadProgress,
   CloudPublishProfileInput,
   CloudSettings,
+  CloudSettingsView,
   CloudVideoListQuery,
   MixProjectConfig,
   TaskJobUpdate,
@@ -48,6 +49,12 @@ const api: AppApi = {
   },
   getCloudSettings: () => ipcRenderer.invoke("cloud:get-settings"),
   saveCloudSettings: (settings: CloudSettings) => ipcRenderer.invoke("cloud:save-settings", settings),
+  logoutCloudAccount: () => ipcRenderer.invoke("cloud:logout"),
+  onCloudSettingsUpdate: (callback: (settings: CloudSettingsView) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, settings: CloudSettingsView) => callback(settings);
+    ipcRenderer.on("cloud:settings-update", listener);
+    return () => ipcRenderer.removeListener("cloud:settings-update", listener);
+  },
   getCloudPublishProfiles: () => ipcRenderer.invoke("cloud:publish-profiles"),
   saveCloudPublishProfile: (profile: CloudPublishProfileInput) => ipcRenderer.invoke("cloud:save-publish-profile", profile),
   deleteCloudPublishProfile: (profileId: string) => ipcRenderer.invoke("cloud:delete-publish-profile", profileId),

@@ -486,6 +486,8 @@ export interface AppApi {
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) => () => void;
   getCloudSettings: () => Promise<CloudSettingsView>;
   saveCloudSettings: (settings: CloudSettings) => Promise<CloudSettingsView>;
+  logoutCloudAccount: () => Promise<CloudSettingsView>;
+  onCloudSettingsUpdate: (callback: (settings: CloudSettingsView) => void) => () => void;
   getCloudPublishProfiles: () => Promise<CloudPublishProfile[]>;
   saveCloudPublishProfile: (profile: CloudPublishProfileInput) => Promise<CloudPublishProfile>;
   deleteCloudPublishProfile: (profileId: string) => Promise<void>;

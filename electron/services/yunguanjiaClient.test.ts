@@ -62,6 +62,43 @@ describe("YunguanjiaClient", () => {
     });
   });
 
+  it("logs out by clearing the selected account and every reusable token", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "yunguanjia-test-"));
+    const configPath = path.join(dir, "yunguanjia-cloud.json");
+    const client = new YunguanjiaClient(() => dir);
+    await fs.writeFile(configPath, JSON.stringify({
+      baseUrl: "https://api.example.com",
+      companyKey: "company",
+      companySecret: "secret",
+      accountKey: "old-account",
+      accountName: "旧剪辑",
+      accountLogin: "13900000000",
+      uploadBaseUrl: "https://upload.example.com",
+      uploadToken: "web-token",
+      accessToken: "openapi-token",
+      accessTokenExpiresAt: Date.now() + 60_000
+    }), "utf8");
+
+    const view = await client.logout();
+    const stored = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+
+    expect(view).toMatchObject({
+      accountKey: "",
+      accountName: "",
+      accountLogin: "",
+      hasUploadToken: false
+    });
+    expect(stored).toMatchObject({
+      baseUrl: "https://api.example.com",
+      companyKey: "company",
+      companySecret: "secret",
+      accountKey: "",
+      uploadToken: ""
+    });
+    expect(stored).not.toHaveProperty("accessToken");
+    expect(stored).not.toHaveProperty("accessTokenExpiresAt");
+  });
+
   it("does not pretend local videos can be uploaded with only an openapi token", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "yunguanjia-test-"));
     const client = new YunguanjiaClient(() => dir);

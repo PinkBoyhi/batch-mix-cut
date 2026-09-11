@@ -99,6 +99,24 @@ export class YunguanjiaClient {
     return toSettingsView(next);
   }
 
+  async logout(): Promise<CloudSettingsView> {
+    const current = await this.readSettings();
+    const next: StoredCloudSettings = {
+      baseUrl: current.baseUrl,
+      companyKey: current.companyKey,
+      companySecret: current.companySecret,
+      accountKey: "",
+      accountName: "",
+      accountLogin: "",
+      uploadBaseUrl: current.uploadBaseUrl,
+      uploadToken: "",
+      accessToken: undefined,
+      accessTokenExpiresAt: undefined
+    };
+    await this.writeSettings(next);
+    return toSettingsView(next);
+  }
+
   async testConnection(): Promise<{ ok: true }> {
     const settings = await this.ensureReadySettings(false);
     await this.writeSettings({ ...settings, accessToken: undefined, accessTokenExpiresAt: undefined });
