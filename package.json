@@ -1,6 +1,6 @@
 {
   "name": "batch-mix-cut",
-  "version": "0.1.57",
+  "version": "0.1.58",
   "private": true,
   "type": "module",
   "description": "本地批量混剪与剪映草稿替换工具",
@@ -23,12 +23,9 @@
     "verify:release": "pnpm typecheck && pnpm test && pnpm build && node scripts/check-remote-server.mjs --e2e"
   },
   "dependencies": {
-    "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "@ffmpeg-installer/win32-x64": "^4.1.0",
-    "@ffprobe-installer/ffprobe": "^2.1.2",
-    "@ffprobe-installer/win32-x64": "^5.1.0",
     "@vitejs/plugin-react": "^5.0.0",
     "electron-is-dev": "^3.0.1",
+    "ffmpeg-ffprobe-static": "7.1.0-rc.1",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -60,8 +57,7 @@
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/@ffmpeg-installer/**",
-      "node_modules/@ffprobe-installer/**"
+      "node_modules/ffmpeg-ffprobe-static/**"
     ],
     "extraResources": [
       {

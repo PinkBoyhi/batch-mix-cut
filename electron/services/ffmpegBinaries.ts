@@ -41,6 +41,26 @@ function resolveBundledBinary(kind: BinaryKind): string {
   }
 
   try {
+    const modernStatic = require("ffmpeg-ffprobe-static") as { ffmpegPath?: string; ffprobePath?: string };
+    const modernStaticPath = kind === "ffmpeg" ? modernStatic.ffmpegPath : modernStatic.ffprobePath;
+    if (modernStaticPath && isUsableBinary(unpackAsarPath(modernStaticPath))) {
+      return unpackAsarPath(modernStaticPath);
+    }
+  } catch {
+    // Fall through to legacy installers and finally PATH.
+  }
+
+  // Server installs can retain an old desktop installer package in node_modules.
+  // On Linux, prefer the actively maintained system binary before that legacy
+  // fallback so new camera codecs do not silently regress after deployment.
+  if (process.platform === "linux") {
+    const systemPath = resolveFromSystemPath(binaryName);
+    if (systemPath) {
+      return systemPath;
+    }
+  }
+
+  try {
     const directPackage = kind === "ffmpeg" ? "@ffmpeg-installer/win32-x64" : "@ffprobe-installer/win32-x64";
     if (process.platform === "win32" && process.arch === "x64") {
       const directPath = unpackAsarPath(require.resolve(`${directPackage}/${binaryName}`));
@@ -66,6 +86,16 @@ function resolveBundledBinary(kind: BinaryKind): string {
   }
 
   return binaryName;
+}
+
+function resolveFromSystemPath(binaryName: string): string | undefined {
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    const candidate = path.join(directory, binaryName);
+    if (directory && isUsableBinary(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function isUsableBinary(binaryPath: string): boolean {

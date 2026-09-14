@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { isDecodableAudioStream } from "./mediaProbe.js";
 
 describe("isDecodableAudioStream", () => {
-  it("rejects ipcm streams that ffmpeg cannot decode", () => {
-    expect(isDecodableAudioStream({ codec_type: "audio", codec_name: "none", codec_tag_string: "ipcm" })).toBe(false);
+  it("accepts ISO-BMFF PCM even when an older probe cannot name its codec", () => {
+    expect(isDecodableAudioStream({ codec_type: "audio", codec_name: "none", codec_tag_string: "ipcm" })).toBe(true);
+    expect(isDecodableAudioStream({ codec_type: "audio", codec_name: "pcm_s16le", codec_tag_string: "ipcm" })).toBe(true);
   });
 
   it("accepts regular decoded audio streams", () => {

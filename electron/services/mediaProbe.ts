@@ -50,10 +50,13 @@ function positiveNumber(value: string | undefined): number | undefined {
 export function isDecodableAudioStream(stream: ProbeStream): boolean {
   const codecName = stream.codec_name?.toLowerCase().trim();
   const codecTag = stream.codec_tag_string?.toLowerCase().trim();
-  if (!codecName || ["none", "unknown", "bin_data"].includes(codecName)) {
-    return false;
-  }
+  // Older ffprobe builds report modern ISO-BMFF PCM as codec "none" while a
+  // current FFmpeg decodes the same ipcm stream correctly. The desktop ships a
+  // current decoder, so the standardized tag is enough to keep the real audio.
   if (codecTag === "ipcm") {
+    return true;
+  }
+  if (!codecName || ["none", "unknown", "bin_data"].includes(codecName)) {
     return false;
   }
   return true;

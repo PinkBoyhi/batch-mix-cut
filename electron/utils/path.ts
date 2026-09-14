@@ -1,8 +1,14 @@
 import path from "node:path";
 import crypto from "node:crypto";
 
-export const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"]);
-export const AUDIO_EXTENSIONS = new Set([".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg"]);
+export const VIDEO_EXTENSIONS = new Set([
+  ".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".ts", ".mts", ".m2ts",
+  ".mpg", ".mpeg", ".m2v", ".vob", ".3gp", ".3g2", ".flv", ".f4v", ".wmv",
+  ".asf", ".mxf", ".ogv", ".rm", ".rmvb", ".divx", ".dv", ".qt", ".mod", ".tod"
+]);
+export const AUDIO_EXTENSIONS = new Set([
+  ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma", ".aiff", ".aif", ".caf"
+]);
 
 export function naturalCompare(a: string, b: string): number {
   return a.localeCompare(b, "zh-CN", { numeric: true, sensitivity: "base" });

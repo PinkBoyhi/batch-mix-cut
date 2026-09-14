@@ -85,7 +85,7 @@ describe("export integrity and user controls", () => {
   });
   it("uses display dimensions for rotated portrait footage", async () => {
     const source = path.join(dir, "landscape.mp4"), rotated = path.join(dir, "portrait.mp4"); await makeVideo(source);
-    await exec(getFfmpegPath(), ["-y", "-i", source, "-c", "copy", "-metadata:s:v:0", "rotate=90", rotated]);
+    await exec(getFfmpegPath(), ["-y", "-display_rotation:v:0", "90", "-i", source, "-c", "copy", rotated]);
     const info = await probeAsset(asset(rotated)); expect([info.width, info.height]).toEqual([90, 160]);
     const output = await probeAsset(asset(await exportConfig(config(info))));
     expect([output.width, output.height]).toEqual([90, 160]);

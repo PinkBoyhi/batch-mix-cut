@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AssetInfo, MixCombination, MixProjectConfig } from "../../src/shared/types.js";
 import { exportVideo, mergeAssetMetadata, resolveBgmTargetDb } from "./ffmpeg.js";
@@ -202,6 +203,98 @@ describe("exportVideo audio output", () => {
     },
     30000
   );
+
+  it(
+    "keeps ipcm audio from current phone and camera MP4 files",
+    async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "yibo-mix-ipcm-audio-"));
+      tempDirs.push(tempDir);
+
+      const inputPath = fileURLToPath(new URL("./fixtures/ipcm-phone-sample.mp4", import.meta.url));
+      const outputPath = path.join(tempDir, "mixed-output.mp4");
+
+      const asset = await probeAsset({
+        id: "phone-ipcm",
+        kind: "video",
+        name: "phone-ipcm.mp4",
+        path: inputPath
+      });
+      expect(asset.hasAudio).toBe(true);
+      const config: MixProjectConfig = {
+        projectDir: tempDir,
+        outputDir: tempDir,
+        slots: [{ name: "A", assets: [asset], sortOrder: 0 }],
+        bgmAssets: [],
+        bgmRange: { fadeInSeconds: 0, fadeOutSeconds: 0 },
+        bgmTracks: [],
+        maxCombinations: 1,
+        outputNamePattern: "mixed",
+        exportMode: "video",
+        sourceVolume: 1,
+        bgmVolume: 1,
+        normalizeLoudness: false,
+        videoProfile: {
+          codec: "h264",
+          audioCodec: "aac",
+          preset: "veryfast",
+          crf: 28,
+          canvasMode: "original"
+        },
+        exportTarget: "local",
+        draftSlots: []
+      };
+      const combination: MixCombination = {
+        id: "mix_0001",
+        index: 1,
+        slotAssets: { A: asset },
+        targetVideoPath: outputPath,
+        targetDraftPath: path.join(tempDir, "draft")
+      };
+
+      await exportVideo(config, combination).promise;
+
+      const output = await probeAsset({ id: "output", path: outputPath, name: "output.mp4", kind: "video" });
+      expect(output.hasAudio).toBe(true);
+      await expect(measureMeanVolume(outputPath)).resolves.toBeGreaterThan(-35);
+    },
+    30000
+  );
+
+  it("rejects a silent combination instead of publishing it as completed", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "yibo-mix-no-audio-"));
+    tempDirs.push(tempDir);
+    const inputPath = path.join(tempDir, "video-only.mp4");
+    await runFfmpeg([
+      "-y", "-f", "lavfi", "-i", "testsrc2=size=160x284:rate=30:duration=0.4",
+      "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", inputPath
+    ]);
+    const asset = await probeAsset({ id: "video-only", path: inputPath, name: "video-only.mp4", kind: "video" });
+    const config: MixProjectConfig = {
+      projectDir: tempDir,
+      outputDir: tempDir,
+      slots: [{ name: "A", assets: [asset], sortOrder: 0 }],
+      bgmAssets: [],
+      bgmRange: { fadeInSeconds: 0, fadeOutSeconds: 0 },
+      bgmTracks: [],
+      maxCombinations: 1,
+      outputNamePattern: "mixed",
+      exportMode: "video",
+      sourceVolume: 1,
+      bgmVolume: 1,
+      normalizeLoudness: false,
+      videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 28, canvasMode: "original" },
+      exportTarget: "local",
+      draftSlots: []
+    };
+
+    await expect(exportVideo(config, {
+      id: "mix_0001",
+      index: 1,
+      slotAssets: { A: asset },
+      targetVideoPath: path.join(tempDir, "mixed-output.mp4"),
+      targetDraftPath: path.join(tempDir, "draft")
+    }).promise).rejects.toThrow("没有可解码音轨");
+  }, 30000);
 
   it(
     "normalizes a very quiet source before applying user volume",

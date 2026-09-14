@@ -248,8 +248,8 @@ function registerIpc(): void {
       properties: ["openFile", "multiSelections"],
       filters:
         kind === "audio"
-          ? [{ name: "音频素材", extensions: ["mp3", "m4a", "aac", "wav", "flac", "ogg"] }]
-          : [{ name: "视频素材", extensions: ["mp4", "mov", "m4v", "mkv", "avi", "webm"] }]
+          ? [{ name: "音频素材", extensions: ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma", "aiff", "aif", "caf"] }]
+          : [{ name: "视频素材", extensions: ["mp4", "mov", "m4v", "mkv", "avi", "webm", "ts", "mts", "m2ts", "mpg", "mpeg", "m2v", "vob", "3gp", "3g2", "flv", "f4v", "wmv", "asf", "mxf", "ogv", "rm", "rmvb", "divx", "dv", "qt", "mod", "tod"] }]
     };
     const owner = getEventWindow(event);
     const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);

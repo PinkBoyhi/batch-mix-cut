@@ -5,6 +5,13 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+const require = createRequire(import.meta.url);
+const { ffmpegPath, ffprobePath } = require("ffmpeg-ffprobe-static");
+
+if (!ffmpegPath || !ffprobePath) {
+  throw new Error("未找到内置 FFmpeg/FFprobe，无法执行发布前混剪检查");
+}
+
 const runLocalWorkflow = process.argv.includes("--local") || process.argv.includes("--e2e");
 const runRemoteWorkflow = process.argv.includes("--e2e");
 
@@ -18,7 +25,7 @@ if (runRemoteWorkflow || !runLocalWorkflow) {
   if (!health.ok || !health.workspaceRoot) {
     throw new Error("服务器健康检查未通过");
   }
-  if (Number(health.audioPipelineVersion ?? 0) < 6) {
+  if (Number(health.audioPipelineVersion ?? 0) < 7) {
     throw new Error("服务器混剪引擎版本过旧，无法保证完整音轨和音画同步");
   }
   if (Number(health.combinationPipelineVersion ?? 0) < 3) {
@@ -311,15 +318,11 @@ function assertCartesianCombinationOrder(files, label) {
 }
 
 async function probeStreams(filePath) {
-  const require = createRequire(import.meta.url);
-  const ffprobePath = require("@ffprobe-installer/ffprobe").path;
   const { stdout } = await collectProcessOutput(ffprobePath, ["-v", "error", "-print_format", "json", "-show_streams", filePath]);
   return JSON.parse(stdout).streams ?? [];
 }
 
 async function assertVisibleVideoFrame(filePath, label, fileName) {
-  const require = createRequire(import.meta.url);
-  const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
   const { stderr } = await collectProcessOutput(ffmpegPath, [
     "-hide_banner",
     "-loglevel",
@@ -343,8 +346,6 @@ async function assertVisibleVideoFrame(filePath, label, fileName) {
 }
 
 async function assertAudibleAudio(filePath, label, fileName) {
-  const require = createRequire(import.meta.url);
-  const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
   const { stderr } = await collectProcessOutput(ffmpegPath, [
     "-hide_banner",
     "-nostats",
@@ -366,8 +367,6 @@ async function assertAudibleAudio(filePath, label, fileName) {
 }
 
 async function assertAudibleAudioAtTimestamp(filePath, timestampSeconds, label, fileName) {
-  const require = createRequire(import.meta.url);
-  const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
   const { stderr } = await collectProcessOutput(ffmpegPath, [
     "-hide_banner",
     "-nostats",
@@ -393,8 +392,6 @@ async function assertAudibleAudioAtTimestamp(filePath, timestampSeconds, label, 
 }
 
 async function assertBgmToneAtTimestamp(filePath, timestampSeconds, frequency, label, fileName) {
-  const require = createRequire(import.meta.url);
-  const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
   const { stderr } = await collectProcessOutput(ffmpegPath, [
     "-hide_banner",
     "-nostats",
@@ -423,8 +420,6 @@ async function assertBgmToneAtTimestamp(filePath, timestampSeconds, frequency, l
 }
 
 async function createTestVideo(targetPath, { size, rate, duration, audioDuration = duration, frequency, audioVolume = 1 }) {
-  const require = createRequire(import.meta.url);
-  const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
   await runProcess(ffmpegPath, [
       "-hide_banner",
       "-loglevel",
@@ -449,8 +444,6 @@ async function createTestVideo(targetPath, { size, rate, duration, audioDuration
 }
 
 async function createTestAudio(targetPath, frequency) {
-  const require = createRequire(import.meta.url);
-  const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
   await runProcess(ffmpegPath, [
     "-hide_banner",
     "-loglevel",

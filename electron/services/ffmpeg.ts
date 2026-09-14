@@ -63,6 +63,15 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     const bgmLoudness = normalizeLoudness
       ? await resolveBgmLoudness(bgmTracks, bgmTargetDb, signal)
       : [];
+    const hasEnabledSourceAudio = config.sourceVolume > 0 && videoAssets.some((asset) => asset.hasAudio);
+    const hasEnabledBgm = config.bgmVolume > 0 && bgmTracks.length > 0;
+    if (!hasEnabledSourceAudio && !hasEnabledBgm) {
+      throw new Error(
+        config.sourceVolume <= 0
+          ? "本组合没有可输出的声音：原声音量为 0%，且没有启用可用的 BGM"
+          : "本组合的源视频没有可解码音轨，且没有启用可用的 BGM；请检查提示的素材或重新导入"
+      );
+    }
 
     const args: string[] = ["-y"];
     if (ffmpegThreadLimit) {
@@ -494,7 +503,7 @@ function assertOutputMediaIntegrity(
   const expectsSourceAudio = config.sourceVolume > 0 && videoAssets.some((asset) => asset.hasAudio === true);
   const expectsBgmAudio = config.bgmVolume > 0 && bgmTracks.length > 0;
   if (!expectsSourceAudio && !expectsBgmAudio) {
-    return;
+    throw new Error("成片没有可验证的声音来源，不会把静音文件标记为成功");
   }
   if (!output.hasAudio) {
     throw new Error("成片没有可播放的音轨，请重试该组合");
