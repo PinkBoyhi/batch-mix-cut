@@ -524,6 +524,10 @@ button:disabled {
   gap: 8px;
 }
 
+.toolbar.has-resume-download {
+  grid-template-columns: repeat(4, 42px) 116px;
+}
+
 .toolbar button {
   display: grid;
   width: 42px;
@@ -532,6 +536,13 @@ button:disabled {
   color: #17436d;
   background: #e6f1fc;
   border-radius: 8px;
+}
+
+.toolbar .resume-download-button,
+.toolbar.has-resume-download button:last-child {
+  display: inline-flex;
+  gap: 7px;
+  width: 116px;
 }
 
 .toolbar button:first-child {
@@ -2384,7 +2395,15 @@ tbody tr:nth-child(even) td {
     grid-template-columns: repeat(5, minmax(34px, 1fr));
   }
 
+  .toolbar.has-resume-download {
+    grid-template-columns: repeat(4, minmax(34px, 1fr)) minmax(110px, 2fr);
+  }
+
   .toolbar button {
+    width: 100%;
+  }
+
+  .toolbar.has-resume-download button:last-child {
     width: 100%;
   }
 

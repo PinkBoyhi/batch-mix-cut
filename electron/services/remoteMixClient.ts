@@ -26,6 +26,8 @@ const MIN_SERVER_COMBINATION_PIPELINE_VERSION = 3;
 const REQUEST_TIMEOUT_MS = 20_000;
 const TRANSFER_RETRY_ATTEMPTS = 3;
 const POLL_FAILURE_LIMIT = 8;
+const LOCAL_DOWNLOAD_MIN_RESERVE_BYTES = 1024 ** 3;
+const LOCAL_DOWNLOAD_RESERVE_RATIO = 0.1;
 
 interface StoredRemoteSettings extends RemoteMixSettings {}
 
@@ -240,6 +242,27 @@ export class RemoteMixClient extends EventEmitter {
     return this.snapshot;
   }
 
+  async resumeDownload(outputDir?: string): Promise<BatchJobSnapshot> {
+    if (this.starting || this.polling) throw new Error("任务仍在运行或停止中，请稍后继续下载");
+    if (!this.currentJobId || !this.originalConfig || this.snapshot.recoveryAction !== "resume_download") {
+      throw new Error("当前没有可继续的服务器成片下载任务");
+    }
+    const settings = this.currentSettings ?? (await this.readSettings());
+    if (outputDir?.trim()) {
+      this.originalConfig = { ...this.originalConfig, outputDir: outputDir.trim() };
+    }
+    this.stopped = false;
+    this.transferController = new AbortController();
+    this.emitSnapshot({
+      ...this.snapshot,
+      status: "running",
+      recoveryAction: undefined,
+      message: "正在检查已下载成片并继续下载缺失文件..."
+    });
+    this.beginPolling(settings, this.originalConfig, this.monitor);
+    return this.snapshot;
+  }
+
   getSnapshot(): BatchJobSnapshot {
     return structuredClone(this.snapshot);
   }
@@ -350,17 +373,19 @@ export class RemoteMixClient extends EventEmitter {
             await monitor?.update({ stage: "stopped", status: "stopped", progress: { message: "任务已停止" }, finishedAt: new Date().toISOString() });
             return;
           }
+          const message = describeOutputDownloadFailure(error, originalConfig.outputDir);
           this.emitSnapshot({
             ...response.snapshot,
             status: "failed",
-            message: `服务器成片下载失败：${toErrorMessage(error)}`,
+            recoveryAction: "resume_download",
+            message,
             finishedAt: new Date().toISOString()
           });
           await monitor?.update({
             stage: "failed",
             status: "failed",
-            error: `服务器成片下载失败：${toErrorMessage(error)}`,
-            progress: { message: `服务器成片下载失败：${toErrorMessage(error)}` },
+            error: message,
+            progress: { message },
             finishedAt: new Date().toISOString()
           });
         }
@@ -467,6 +492,21 @@ export class RemoteMixClient extends EventEmitter {
     const localVideosDir = path.join(originalConfig.outputDir, "videos");
     await fs.mkdir(localVideosDir, { recursive: true });
     const signal = this.transferController.signal;
+    const pendingFiles = [];
+    for (const file of response.files) {
+      const targetPath = path.join(localVideosDir, path.basename(file.name));
+      const existing = await fs.stat(targetPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (existing?.isFile() && existing.size === file.size) {
+        this.downloadedOutputs.set(targetPath, file.size);
+        continue;
+      }
+      if (existing) await assertOutputAvailable(targetPath);
+      pendingFiles.push(file);
+    }
+    await assertSufficientLocalDownloadSpace(localVideosDir, pendingFiles.reduce((sum, file) => sum + Math.max(0, file.size), 0));
     for (const [index, file] of response.files.entries()) {
       signal.throwIfAborted();
       const targetPath = path.join(localVideosDir, path.basename(file.name));
@@ -629,6 +669,44 @@ export function getRemoteCompletionError(snapshot: BatchJobSnapshot): string | u
   return reason ? `服务器未生成成片：${reason}` : "服务器未生成成片，请检查服务器日志后重试";
 }
 
+export function describeOutputDownloadFailure(error: unknown, outputDir: string): string {
+  const detail = toErrorMessage(error);
+  if (detail.startsWith("本地输出磁盘空间不足：")) {
+    return `${detail} 已完整下载的成片会自动跳过，不会重新混剪。`;
+  }
+  if (isNoSpaceError(error)) {
+    return `本地输出磁盘空间不足，无法写入成片（${outputDir}）。请清理空间或更换输出磁盘后点击“继续下载”；已完整下载的成片会自动跳过，不会重新混剪。`;
+  }
+  return `服务器成片下载失败：${detail}。请检查网络后点击“继续下载”；已完整下载的成片会自动跳过，不会重新混剪。`;
+}
+
+export function getRequiredLocalDownloadBytes(pendingBytes: number): number {
+  const safePendingBytes = Math.max(0, pendingBytes);
+  const reserveBytes = Math.max(LOCAL_DOWNLOAD_MIN_RESERVE_BYTES, Math.ceil(safePendingBytes * LOCAL_DOWNLOAD_RESERVE_RATIO));
+  return safePendingBytes + reserveBytes;
+}
+
+async function assertSufficientLocalDownloadSpace(directory: string, pendingBytes: number): Promise<void> {
+  if (pendingBytes <= 0) return;
+  const storage = await fs.statfs(directory);
+  const freeBytes = Number(BigInt(storage.bavail) * BigInt(storage.bsize));
+  const requiredBytes = getRequiredLocalDownloadBytes(pendingBytes);
+  if (freeBytes >= requiredBytes) return;
+  const error = new Error(
+    `本地输出磁盘空间不足：剩余 ${bytesToGb(freeBytes)}GB，待下载成片 ${bytesToGb(pendingBytes)}GB，` +
+    `为避免下载中途失败需要至少 ${bytesToGb(requiredBytes)}GB。请清理空间或更换输出磁盘后点击“继续下载”。`
+  ) as NodeJS.ErrnoException;
+  error.code = "ENOSPC";
+  throw error;
+}
+
+function isNoSpaceError(error: unknown): boolean {
+  const candidate = error as NodeJS.ErrnoException | undefined;
+  if (candidate?.code === "ENOSPC") return true;
+  const message = toErrorMessage(error);
+  return /\bENOSPC\b|no space left on device|磁盘空间不足/i.test(message);
+}
+
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -734,6 +812,7 @@ async function retryTransfer<T>(
     } catch (error) {
       signal?.throwIfAborted();
       lastError = error;
+      if (isNoSpaceError(error)) throw error;
       if (attempt === TRANSFER_RETRY_ATTEMPTS) {
         break;
       }

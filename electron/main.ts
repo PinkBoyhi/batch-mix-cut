@@ -375,6 +375,8 @@ function registerIpc(): void {
   ipcMain.handle("remote:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.resume());
   ipcMain.handle("remote:stop", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.stop());
   ipcMain.handle("remote:retry", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.retryFailures());
+  ipcMain.handle("remote:resume-download", async (event, taskId: string, outputDir?: string) =>
+    getTaskRuntime(event, taskId).remoteMixClient.resumeDownload(outputDir));
   ipcMain.handle("remote:get", async (event, taskId: string) => getTaskRuntime(event, taskId).remoteMixClient.getSnapshot());
   ipcMain.handle("job:pause", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.pause());
   ipcMain.handle("job:resume", async (event, taskId: string) => getTaskRuntime(event, taskId).jobManager.resume());

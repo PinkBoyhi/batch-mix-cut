@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cloud,
+  Download,
   Eye,
   FileText,
   FolderOpen,
@@ -534,6 +535,8 @@ function TaskWorkspace({
 
   const progress = job.total > 0 ? Math.round(((job.completed + job.failed) / job.total) * 100) : 0;
   const hasActiveTask = ["queued", "running", "paused", "stopping"].includes(job.status);
+  const canResumeRemoteDownload =
+    activeMixExecutionTarget === "server" && job.status === "failed" && job.recoveryAction === "resume_download";
   const canStart =
     !!config &&
     combinations.length > 0 &&
@@ -1801,7 +1804,7 @@ function TaskWorkspace({
             <Stat label="完成" value={job.completed} />
             <Stat label="失败" value={job.failed} />
           </div>
-          <div className="toolbar">
+          <div className={`toolbar${canResumeRemoteDownload ? " has-resume-download" : ""}`}>
             <button type="button" onClick={startJob} disabled={!canStart} title="开始">
               <Play size={17} />
             </button>
@@ -1836,16 +1839,22 @@ function TaskWorkspace({
               <Square size={17} />
             </button>
             <button
+              className={canResumeRemoteDownload ? "resume-download-button" : undefined}
               type="button"
               onClick={() =>
                 void (api
-                  ? runAction(() => (activeMixExecutionTarget === "server" ? api.retryRemoteFailures(taskId) : api.retryFailures(taskId)))
+                  ? runAction(() => canResumeRemoteDownload
+                    ? api.resumeRemoteDownload(taskId, config?.outputDir)
+                    : activeMixExecutionTarget === "server"
+                      ? api.retryRemoteFailures(taskId)
+                      : api.retryFailures(taskId))
                   : undefined)
               }
-              disabled={job.failures.length === 0 || hasActiveTask || startingJob}
-              title="重试失败"
+              disabled={(!canResumeRemoteDownload && job.failures.length === 0) || hasActiveTask || startingJob}
+              title={canResumeRemoteDownload ? "继续下载" : "重试失败"}
             >
-              <RotateCcw size={17} />
+              {canResumeRemoteDownload ? <Download size={17} /> : <RotateCcw size={17} />}
+              {canResumeRemoteDownload && <span>继续下载</span>}
             </button>
           </div>
         </section>

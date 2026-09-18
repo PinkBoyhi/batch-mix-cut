@@ -125,6 +125,7 @@ export interface BatchJobSnapshot {
   currentCombinationId?: string;
   message: string;
   failures: JobFailure[];
+  recoveryAction?: "resume_download";
   startedAt?: string;
   finishedAt?: string;
 }
@@ -468,6 +469,7 @@ export interface AppApi {
   resumeRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
   stopRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
   retryRemoteFailures: (taskId: string) => Promise<BatchJobSnapshot>;
+  resumeRemoteDownload: (taskId: string, outputDir?: string) => Promise<BatchJobSnapshot>;
   getRemoteJob: (taskId: string) => Promise<BatchJobSnapshot>;
   getRemoteMixSettings: (taskId: string) => Promise<RemoteMixSettingsView>;
   saveRemoteMixSettings: (taskId: string, settings: RemoteMixSettings) => Promise<RemoteMixSettingsView>;
