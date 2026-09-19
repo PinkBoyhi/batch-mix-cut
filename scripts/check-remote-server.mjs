@@ -177,6 +177,7 @@ async function createWorkflowFixture(rootDir, mode) {
   const config = {
     projectDir: rootDir,
     outputDir,
+    combinationAlgorithmVersion: 4,
     slots: [
       { name: "A", sortOrder: 0, assets: [assets.a1, assets.a2] },
       { name: "B", sortOrder: 1, assets: [assets.b1, assets.b2] },
@@ -207,7 +208,15 @@ async function createWorkflowFixture(rootDir, mode) {
 
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const { createCombinations } = await import(pathToFileURL(path.join(projectRoot, "dist-electron/electron/services/combinator.js")).href);
-  const combinations = createCombinations(config.slots, config.bgmAssets, config.outputDir, config.maxCombinations, config.outputNamePattern, config.bgmTracks);
+  const combinations = createCombinations(
+    config.slots,
+    config.bgmAssets,
+    config.outputDir,
+    config.maxCombinations,
+    config.outputNamePattern,
+    config.bgmTracks,
+    config.combinationAlgorithmVersion
+  );
   if (combinations.length !== 8) {
     throw new Error(`组合测试失败：预期 8 条，实际 ${combinations.length} 条`);
   }

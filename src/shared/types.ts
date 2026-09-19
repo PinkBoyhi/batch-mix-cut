@@ -76,6 +76,7 @@ export interface BgmTrack {
 export interface MixProjectConfig {
   projectDir: string;
   outputDir: string;
+  combinationAlgorithmVersion?: number;
   workflowTitle?: string;
   slots: SegmentSlot[];
   bgmAssets: AssetInfo[];

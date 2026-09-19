@@ -96,6 +96,23 @@ describe("createCombinations", () => {
     }
   });
 
+  it("keeps the legacy strict order for tasks persisted before algorithm v4", () => {
+    const slots: SegmentSlot[] = [
+      { name: "A", sortOrder: 0, assets: [video("a1.mp4"), video("a2.mp4")] },
+      { name: "B", sortOrder: 1, assets: [video("b1.mp4"), video("b2.mp4")] },
+      { name: "C", sortOrder: 2, assets: [video("c1.mp4"), video("c2.mp4")] }
+    ];
+
+    const legacy = createCombinations(slots, [], "/tmp/out", 4, "", [], 3);
+
+    expect(legacy.map(combinationKey)).toEqual([
+      "a1.mp4|b1.mp4|c1.mp4",
+      "a2.mp4|b1.mp4|c1.mp4",
+      "a1.mp4|b2.mp4|c1.mp4",
+      "a2.mp4|b2.mp4|c1.mp4"
+    ]);
+  });
+
   it("selects one candidate from every bgm track", () => {
     const slots: SegmentSlot[] = [{ name: "A", sortOrder: 0, assets: [video("a1.mp4"), video("a2.mp4")] }];
     const bgmTracks: BgmTrack[] = [

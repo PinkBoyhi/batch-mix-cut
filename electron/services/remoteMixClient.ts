@@ -159,7 +159,15 @@ export class RemoteMixClient extends EventEmitter {
       }
 
       this.transferController.signal.throwIfAborted();
-      for (const combination of createCombinations(config.slots, config.bgmAssets, config.outputDir, config.maxCombinations, config.outputNamePattern, config.bgmTracks)) {
+      for (const combination of createCombinations(
+        config.slots,
+        config.bgmAssets,
+        config.outputDir,
+        config.maxCombinations,
+        config.outputNamePattern,
+        config.bgmTracks,
+        config.combinationAlgorithmVersion
+      )) {
         if (config.exportMode !== "draft") await assertOutputAvailable(combination.targetVideoPath);
       }
       this.currentSettings = settings;

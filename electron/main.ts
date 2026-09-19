@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { scanProject } from "./services/projectScanner.js";
 import { JobManager } from "./services/jobManager.js";
-import { createCombinations } from "./services/combinator.js";
+import { createCombinations, CURRENT_COMBINATION_ALGORITHM_VERSION } from "./services/combinator.js";
 import { probeAsset } from "./services/mediaProbe.js";
 import { YunguanjiaClient } from "./services/yunguanjiaClient.js";
 import { CloudPublishProfileStore } from "./services/cloudPublishProfiles.js";
@@ -282,6 +282,7 @@ function registerIpc(): void {
     const config: MixProjectConfig = {
       projectDir: outputDir,
       outputDir,
+      combinationAlgorithmVersion: CURRENT_COMBINATION_ALGORITHM_VERSION,
       workflowTitle: path.basename(outputDir),
       slots: [],
       bgmAssets: [],
@@ -327,7 +328,8 @@ function registerIpc(): void {
       config.outputDir,
       config.maxCombinations ?? 100,
       config.outputNamePattern,
-      config.bgmTracks
+      config.bgmTracks,
+      config.combinationAlgorithmVersion
     );
   });
 

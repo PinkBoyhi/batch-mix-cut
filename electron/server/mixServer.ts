@@ -431,6 +431,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
 async function startJob(config: MixProjectConfig, requestedWorkflowId?: string): Promise<ServerJob> {
   await assertStorageCapacity();
+  // Clients before 0.1.61 previewed and submitted the strict v3 ordering.
+  // Keep that ordering for them; current clients explicitly request v4.
+  config = {
+    ...config,
+    combinationAlgorithmVersion: config.combinationAlgorithmVersion ?? 3
+  };
   const id = `srv_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const existingWorkflow = requestedWorkflowId ? workflowStore.get(requestedWorkflowId) : undefined;
   const workflow = existingWorkflow ?? workflowStore.create({
@@ -506,6 +512,12 @@ async function loadPersistedServerJobs(): Promise<PersistedServerJob[]> {
 
 async function restoreServerJobs(records: PersistedServerJob[]): Promise<void> {
   for (const record of records) {
+    const restoredConfig: MixProjectConfig = {
+      ...record.config,
+      // Jobs persisted before algorithm versioning must resume with the exact
+      // strict order they started with, even after the server is upgraded.
+      combinationAlgorithmVersion: record.config.combinationAlgorithmVersion ?? 3
+    };
     const shouldResume = ["queued", "running", "paused"].includes(record.snapshot.status);
     const wasStopping = record.snapshot.status === "stopping";
     const job: ServerJob = {
@@ -522,8 +534,8 @@ async function restoreServerJobs(records: PersistedServerJob[]): Promise<void> {
         message: "任务已停止",
         finishedAt: record.snapshot.finishedAt ?? new Date().toISOString()
       } : record.snapshot,
-      config: record.config,
-      projectKey: normalizeProjectKey(record.config.projectDir),
+      config: restoredConfig,
+      projectKey: normalizeProjectKey(restoredConfig.projectDir),
       resumeExistingOutputs: shouldResume,
       restorePaused: shouldResume && record.snapshot.status === "paused",
       restoredTerminal: !shouldResume,

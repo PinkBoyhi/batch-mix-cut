@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AssetInfo, MixProjectConfig, ScanResult, SegmentSlot } from "../../src/shared/types.js";
 import { assetId, isAudioFile, isVideoFile, naturalCompare } from "../utils/path.js";
-import { createCombinations } from "./combinator.js";
+import { createCombinations, CURRENT_COMBINATION_ALGORITHM_VERSION } from "./combinator.js";
 import { parseJianyingDraft } from "./jianyingDraft.js";
 import { probeAsset } from "./mediaProbe.js";
 
@@ -69,6 +69,7 @@ export async function scanProject(projectDir: string, templateDraftOverride?: st
   const config: MixProjectConfig = {
     projectDir,
     outputDir,
+    combinationAlgorithmVersion: CURRENT_COMBINATION_ALGORITHM_VERSION,
     workflowTitle: path.basename(projectDir),
     slots,
     bgmAssets,

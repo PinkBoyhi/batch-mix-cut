@@ -2,13 +2,16 @@ import path from "node:path";
 import type { AssetInfo, BgmTrack, MixCombination, MixCombinationBgmTrack, SegmentSlot } from "../../src/shared/types.js";
 import { safeName } from "../utils/path.js";
 
+export const CURRENT_COMBINATION_ALGORITHM_VERSION = 4;
+
 export function createCombinations(
   slots: SegmentSlot[],
   bgmAssets: AssetInfo[],
   outputDir: string,
   maxCombinations = Number.POSITIVE_INFINITY,
   outputNamePattern = "",
-  bgmTracks: BgmTrack[] = []
+  bgmTracks: BgmTrack[] = [],
+  algorithmVersion = CURRENT_COMBINATION_ALGORITHM_VERSION
 ): MixCombination[] {
   if (slots.length === 0 || slots.some((slot) => slot.assets.length === 0)) {
     return [];
@@ -31,7 +34,7 @@ export function createCombinations(
     // remapping is bijective, so a complete run still contains no duplicates.
     for (const slot of sortedSlots) {
       const baseAssetIndex = Math.floor(index / lowerSlotCombinations) % slot.assets.length;
-      const lowerCombinationIndex = index % lowerSlotCombinations;
+      const lowerCombinationIndex = algorithmVersion >= 4 ? index % lowerSlotCombinations : 0;
       const assetIndex = (baseAssetIndex + lowerCombinationIndex) % slot.assets.length;
       slotAssets[slot.name] = slot.assets[assetIndex];
       lowerSlotCombinations *= slot.assets.length;

@@ -43,7 +43,8 @@ export class JobManager extends EventEmitter {
       config.outputDir,
       config.maxCombinations ?? 100,
       config.outputNamePattern,
-      config.bgmTracks
+      config.bgmTracks,
+      config.combinationAlgorithmVersion
     );
     if (this.combinations.length === 0) throw new Error("没有可导出的组合，请检查段落素材和最大数量");
     if (options.resumeExistingOutputs) await cleanupStalePartialOutputs(config.outputDir);
