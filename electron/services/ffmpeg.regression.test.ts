@@ -16,17 +16,31 @@ let dir: string;
 beforeEach(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), "mix-regression-")); });
 afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
 const asset = (filePath: string): AssetInfo => ({ id: filePath, path: filePath, name: path.basename(filePath), kind: "video" });
+const audioAsset = (filePath: string): AssetInfo => ({
+  id: filePath,
+  path: filePath,
+  name: path.basename(filePath),
+  kind: "audio",
+  hasAudio: true,
+  durationSeconds: 1
+});
 async function makeVideo(filePath: string, duration = 1) {
   await exec(getFfmpegPath(), ["-y", "-f", "lavfi", "-i", `testsrc2=size=160x90:rate=30:duration=${duration}`,
     "-f", "lavfi", "-i", `sine=frequency=440:sample_rate=44100:duration=${duration}`,
     "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", filePath]);
+}
+async function makeAudio(filePath: string, duration = 1) {
+  await exec(getFfmpegPath(), ["-y", "-f", "lavfi", "-i", `sine=frequency=880:sample_rate=44100:duration=${duration}`,
+    "-c:a", "aac", filePath]);
 }
 function config(source: AssetInfo, name = "result"): MixProjectConfig {
   return { projectDir: dir, outputDir: dir, slots: [{ name: "A", assets: [source], sortOrder: 0 }], bgmAssets: [], bgmTracks: [],
     bgmRange: { fadeInSeconds: 0, fadeOutSeconds: 0 }, maxCombinations: 1, outputNamePattern: name, exportMode: "video", exportTarget: "local",
     sourceVolume: 1, bgmVolume: 0, normalizeLoudness: false, videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 28, canvasMode: "original" }, draftSlots: [] };
 }
-function combination(c: MixProjectConfig) { return createCombinations(c.slots, [], dir, 1, c.outputNamePattern)[0]; }
+function combination(c: MixProjectConfig) {
+  return createCombinations(c.slots, c.bgmAssets, dir, 1, c.outputNamePattern, c.bgmTracks)[0];
+}
 async function exportConfig(c: MixProjectConfig) { const out = combination(c); await exportVideo(c, out).promise; return out.targetVideoPath; }
 async function volume(filePath: string) {
   const { stderr } = await exec(getFfmpegPath(), ["-i", filePath, "-vn", "-af", "volumedetect", "-f", "null", "-"]);
@@ -48,6 +62,22 @@ describe("export integrity and user controls", () => {
     const quiet = await volume(await exportConfig({ ...c, sourceVolume: 0.05, outputNamePattern: "quiet" }));
     expect(full - quiet).toBeGreaterThan(24);
     expect(full - quiet).toBeLessThan(28);
+  });
+  it("does not lower the original voice when BGM is added with loudness normalization off", async () => {
+    const source = path.join(dir, "source.mp4");
+    const bgm = path.join(dir, "background.m4a");
+    await Promise.all([makeVideo(source), makeAudio(bgm)]);
+
+    const sourceOnly = await volume(await exportConfig(config(asset(source), "source-only")));
+    const mixedConfig = {
+      ...config(asset(source), "with-bgm"),
+      bgmAssets: [audioAsset(bgm)],
+      bgmVolume: 0.001,
+      bgmRange: { startSlotName: "A", endSlotName: "A", fadeInSeconds: 0, fadeOutSeconds: 0 }
+    };
+    const mixed = await volume(await exportConfig(mixedConfig));
+
+    expect(Math.abs(sourceOnly - mixed)).toBeLessThan(1);
   });
   it("keeps an existing output intact", async () => {
     const source = path.join(dir, "source.mp4"); await makeVideo(source);

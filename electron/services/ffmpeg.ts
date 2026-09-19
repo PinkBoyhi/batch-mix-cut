@@ -145,7 +145,11 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     const finalAudioFilterChain = buildFinalAudioFilterChain();
     if (activeBgmLabels.length > 0) {
       filters.push(
-        `[asrc]${activeBgmLabels.join("")}amix=inputs=${activeBgmLabels.length + 1}:duration=first:dropout_transition=0[amixed]`
+        // amix defaults to normalize=1, which divides every input by the input
+        // count. That silently turns a 100% source into 50% with one BGM and
+        // 33% with two BGMs. User volume controls already define the gain, so
+        // preserve those levels and let the final limiter handle summed peaks.
+        `[asrc]${activeBgmLabels.join("")}amix=inputs=${activeBgmLabels.length + 1}:duration=first:dropout_transition=0:normalize=0[amixed]`
       );
       filters.push(`[amixed]${finalAudioFilterChain}[aout]`);
     } else {

@@ -21,7 +21,7 @@ import { WorkflowMonitorClient } from "./workflowMonitorClient.js";
 
 const CONFIG_FILE = "remote-mix-server.json";
 const DEFAULT_SERVER_URL = "http://10.0.0.133:8787";
-const MIN_SERVER_AUDIO_PIPELINE_VERSION = 7;
+const MIN_SERVER_AUDIO_PIPELINE_VERSION = 8;
 const MIN_SERVER_COMBINATION_PIPELINE_VERSION = 3;
 const REQUEST_TIMEOUT_MS = 20_000;
 const TRANSFER_RETRY_ATTEMPTS = 3;

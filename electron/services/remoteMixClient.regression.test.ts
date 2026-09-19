@@ -23,7 +23,7 @@ beforeEach(async () => {
   server = http.createServer((request, response) => {
     const json = (data: unknown, code = 200) => { response.writeHead(code, { "content-type": "application/json" }); response.end(JSON.stringify(data)); };
     request.resume();
-    if (request.url === "/health") return json({ ok: true, workspaceRoot: "/server", audioPipelineVersion: 7, combinationPipelineVersion: 3 });
+    if (request.url === "/health") return json({ ok: true, workspaceRoot: "/server", audioPipelineVersion: 8, combinationPipelineVersion: 3 });
     if (request.url?.startsWith("/api/files/upload")) {
       uploaded();
       if (mode === "upload-slow") return;

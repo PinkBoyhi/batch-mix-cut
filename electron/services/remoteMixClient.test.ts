@@ -161,7 +161,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 7, combinationPipelineVersion: 3 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 8, combinationPipelineVersion: 3 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {
@@ -191,7 +191,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 7, combinationPipelineVersion: 3 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 8, combinationPipelineVersion: 3 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "task-a-token") {
@@ -223,7 +223,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 7, combinationPipelineVersion: 2 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 8, combinationPipelineVersion: 2 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {
@@ -248,12 +248,12 @@ describe("toRemoteAsset", () => {
     }
   });
 
-  it("rejects a server that cannot guarantee complete audio and A/V sync", async () => {
+  it("rejects a v7 server that still lowers source volume while mixing BGM", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "remote-mix-client-"));
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 4, combinationPipelineVersion: 3 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 7, combinationPipelineVersion: 3 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {
