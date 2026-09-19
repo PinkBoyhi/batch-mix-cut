@@ -22,14 +22,19 @@ export function createCombinations(
 
   for (let index = 0; index < count; index += 1) {
     const slotAssets: Record<string, AssetInfo> = {};
-    let cursor = index;
+    let lowerSlotCombinations = 1;
 
-    // 严格笛卡尔积：A 变化最快，随后是 B、C、D。
-    // 不插入随机、抽样、错位或优先级规则，完整生成时每个素材都会与其他段落的每个素材组合一次。
+    // Preserve a complete cartesian product, but rotate every later slot by the
+    // lower-slot combination index. Taking only the first N results therefore
+    // still covers assets from the ending slots instead of keeping them fixed
+    // until every earlier combination has been exhausted. This triangular
+    // remapping is bijective, so a complete run still contains no duplicates.
     for (const slot of sortedSlots) {
-      const assetIndex = cursor % slot.assets.length;
+      const baseAssetIndex = Math.floor(index / lowerSlotCombinations) % slot.assets.length;
+      const lowerCombinationIndex = index % lowerSlotCombinations;
+      const assetIndex = (baseAssetIndex + lowerCombinationIndex) % slot.assets.length;
       slotAssets[slot.name] = slot.assets[assetIndex];
-      cursor = Math.floor(cursor / slot.assets.length);
+      lowerSlotCombinations *= slot.assets.length;
     }
 
     const id = `mix_${String(index + 1).padStart(4, "0")}`;

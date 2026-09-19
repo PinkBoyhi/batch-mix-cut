@@ -23,7 +23,7 @@ describe("createCombinations", () => {
 
     expect(combinations).toHaveLength(4);
     expect(combinations.map((item) => item.slotAssets.A.name)).toEqual(["a1.mp4", "a2.mp4", "a1.mp4", "a2.mp4"]);
-    expect(combinations.map((item) => item.slotAssets.B.name)).toEqual(["b1.mp4", "b1.mp4", "b2.mp4", "b2.mp4"]);
+    expect(combinations.map((item) => item.slotAssets.B.name)).toEqual(["b1.mp4", "b2.mp4", "b2.mp4", "b1.mp4"]);
     expect(combinations.map((item) => item.bgm?.name)).toEqual(["m1.mp3", "m2.mp3", "m1.mp3", "m2.mp3"]);
   });
 
@@ -43,12 +43,12 @@ describe("createCombinations", () => {
     expect(combinations.map((item) => item.slotAssets.A.name)).toEqual(
       Array.from({ length: 40 }, (_, index) => `opening-${(index % 2) + 1}.mp4`)
     );
-    expect(combinations.map((item) => item.slotAssets.B.name)).toEqual(
-      Array.from({ length: 20 }, (_, index) => `body-${index + 1}.mp4`).flatMap((name) => [name, name])
+    expect(countNames(combinations.map((item) => item.slotAssets.B.name))).toEqual(
+      Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`body-${index + 1}.mp4`, 2]))
     );
   });
 
-  it("uses one stable cartesian-product order for every segment", () => {
+  it("spreads every segment through a limited batch without duplicate full combinations", () => {
     const slots: SegmentSlot[] = [
       { name: "A", sortOrder: 0, assets: [video("a1.mp4"), video("a2.mp4")] },
       { name: "B", sortOrder: 1, assets: [video("b1.mp4"), video("b2.mp4")] },
@@ -58,26 +58,42 @@ describe("createCombinations", () => {
     const firstBatch = createCombinations(slots, [], "/tmp/out", 4);
     const completeBatch = createCombinations(slots, [], "/tmp/out");
 
-    expect(firstBatch.map((item) => Object.values(item.slotAssets).map((asset) => asset.name).join("|"))).toEqual([
-      "a1.mp4|b1.mp4|c1.mp4",
-      "a2.mp4|b1.mp4|c1.mp4",
-      "a1.mp4|b2.mp4|c1.mp4",
-      "a2.mp4|b2.mp4|c1.mp4"
-    ]);
-    expect(completeBatch.map((item) => Object.values(item.slotAssets).map((asset) => asset.name).join("|"))).toEqual([
-      "a1.mp4|b1.mp4|c1.mp4",
-      "a2.mp4|b1.mp4|c1.mp4",
-      "a1.mp4|b2.mp4|c1.mp4",
-      "a2.mp4|b2.mp4|c1.mp4",
-      "a1.mp4|b1.mp4|c2.mp4",
-      "a2.mp4|b1.mp4|c2.mp4",
-      "a1.mp4|b2.mp4|c2.mp4",
-      "a2.mp4|b2.mp4|c2.mp4",
-      "a1.mp4|b1.mp4|c3.mp4",
-      "a2.mp4|b1.mp4|c3.mp4",
-      "a1.mp4|b2.mp4|c3.mp4",
-      "a2.mp4|b2.mp4|c3.mp4"
-    ]);
+    expect(firstBatch.map((item) => item.slotAssets.A.name)).toEqual(["a1.mp4", "a2.mp4", "a1.mp4", "a2.mp4"]);
+    expect(firstBatch.map((item) => item.slotAssets.B.name)).toEqual(["b1.mp4", "b2.mp4", "b2.mp4", "b1.mp4"]);
+    expect(firstBatch.map((item) => item.slotAssets.C.name)).toEqual(["c1.mp4", "c2.mp4", "c3.mp4", "c1.mp4"]);
+    expect(new Set(completeBatch.map(combinationKey))).toHaveLength(12);
+  });
+
+  it("uses all three ending clips in the first 100 outputs of a large project", () => {
+    const slots: SegmentSlot[] = [
+      slot("A", 0, 10),
+      slot("B", 1, 10),
+      slot("C", 2, 10),
+      slot("D", 3, 3)
+    ];
+
+    const combinations = createCombinations(slots, [], "/tmp/out", 100);
+
+    expect(new Set(combinations.map(combinationKey))).toHaveLength(100);
+    expect(countNames(combinations.map((item) => item.slotAssets.C.name))).toEqual(
+      Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`C${index + 1}.mp4`, 10]))
+    );
+    expect(countNames(combinations.map((item) => item.slotAssets.D.name))).toEqual({
+      "D1.mp4": 34,
+      "D2.mp4": 33,
+      "D3.mp4": 33
+    });
+  });
+
+  it("keeps every full cartesian combination unique for uneven slot sizes", () => {
+    for (const sizes of [[2, 3, 4], [3, 5, 2, 4], [4, 4, 3, 2]]) {
+      const slots = sizes.map((assetCount, index) => slot(String.fromCharCode(65 + index), index, assetCount));
+      const combinations = createCombinations(slots, [], "/tmp/out");
+      const expectedTotal = sizes.reduce((product, size) => product * size, 1);
+
+      expect(combinations).toHaveLength(expectedTotal);
+      expect(new Set(combinations.map(combinationKey))).toHaveLength(expectedTotal);
+    }
   });
 
   it("selects one candidate from every bgm track", () => {
@@ -106,11 +122,9 @@ describe("createCombinations", () => {
     const combinations = createCombinations(slots, [], "/tmp/out", 5);
 
     expect(combinations).toHaveLength(5);
-    expect(combinations.at(-1)?.slotAssets).toMatchObject({
-      A: expect.objectContaining({ name: "a2.mp4" }),
-      B: expect.objectContaining({ name: "b2.mp4" }),
-      C: expect.objectContaining({ name: "c1.mp4" })
-    });
+    for (const slotName of ["A", "B", "C"]) {
+      expect(new Set(combinations.map((item) => item.slotAssets[slotName].name))).toHaveLength(3);
+    }
   });
 
   it("uses custom output names with padded sequence numbers", () => {
@@ -157,4 +171,23 @@ function bgmTrack(id: string, sortOrder: number, assets: AssetInfo[]): BgmTrack 
     },
     sortOrder
   };
+}
+
+function slot(name: string, sortOrder: number, assetCount: number): SegmentSlot {
+  return {
+    name,
+    sortOrder,
+    assets: Array.from({ length: assetCount }, (_, index) => video(`${name}${index + 1}.mp4`))
+  };
+}
+
+function combinationKey(item: ReturnType<typeof createCombinations>[number]): string {
+  return Object.values(item.slotAssets).map((asset) => asset.name).join("|");
+}
+
+function countNames(names: string[]): Record<string, number> {
+  return names.reduce<Record<string, number>>((counts, name) => {
+    counts[name] = (counts[name] ?? 0) + 1;
+    return counts;
+  }, {});
 }

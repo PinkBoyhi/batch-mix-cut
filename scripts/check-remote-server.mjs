@@ -113,9 +113,9 @@ async function runRemoteMixSmokeTest({ serverUrl, token }) {
         `服务器回传成片 ${index + 1}`,
         fixture.expectedDurations
       );
-      assertCartesianCombinationOrder(files, `服务器回传成片 ${index + 1}`);
+      assertCartesianCombinationCoverage(files, `服务器回传成片 ${index + 1}`);
     }
-    console.log("服务器完整混剪测试通过：3 个并发/排队任务共 24 条严格排列组合均已混剪、回传，并确认音画时长一致、段落无卡帧、BGM 可听见");
+    console.log("服务器完整混剪测试通过：3 个并发/排队任务共 24 条均匀排列组合均已混剪、回传，并确认音画时长一致、段落无卡帧、BGM 可听见");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -133,8 +133,8 @@ async function runLocalMixWorkflowSmokeTest() {
     const snapshot = await completion;
     assertCompletedSnapshot(snapshot, "本地完整混剪测试", fixture.expectedCount);
     const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "本地成片", fixture.expectedDurations);
-    assertCartesianCombinationOrder(files, "本地成片");
-    console.log("本地完整混剪测试通过：8 个严格排列组合、长短音轨对齐、段落无卡帧、BGM 轮换及音量均已校验");
+    assertCartesianCombinationCoverage(files, "本地成片");
+    console.log("本地完整混剪测试通过：8 个均匀排列组合、长短音轨对齐、段落无卡帧、BGM 轮换及音量均已校验");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -300,7 +300,7 @@ async function assertWorkflowOutputs(outputDir, expectedCount, label, expectedDu
   return files;
 }
 
-function assertCartesianCombinationOrder(files, label) {
+function assertCartesianCombinationCoverage(files, label) {
   const actual = files.map((file) => file.replace(/\.mp4$/i, "").split("__").slice(1).join("|"));
   const expected = [
     "A-01|B-01|C-01",
@@ -312,8 +312,10 @@ function assertCartesianCombinationOrder(files, label) {
     "A-01|B-02|C-02",
     "A-02|B-02|C-02"
   ];
-  if (actual.join(",") !== expected.join(",")) {
-    throw new Error(`${label}排列组合顺序错误：预期 ${expected.join("、")}，实际 ${actual.join("、")}`);
+  const actualUnique = [...new Set(actual)].sort();
+  const expectedUnique = [...new Set(expected)].sort();
+  if (actualUnique.join(",") !== expectedUnique.join(",")) {
+    throw new Error(`${label}排列组合覆盖错误：预期 ${expectedUnique.join("、")}，实际 ${actualUnique.join("、")}`);
   }
 }
 
