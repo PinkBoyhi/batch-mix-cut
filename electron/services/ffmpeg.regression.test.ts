@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import http from "node:http";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import type { AssetInfo, MixProjectConfig } from "../../src/shared/types.js";
-import { exportVideo } from "./ffmpeg.js";
+import { buildFinalAudioFilterChain, exportVideo } from "./ffmpeg.js";
 import { getFfmpegPath } from "./ffmpegBinaries.js";
 import { probeAsset } from "./mediaProbe.js";
 import { createCombinations } from "./combinator.js";
@@ -32,6 +32,10 @@ async function makeVideo(filePath: string, duration = 1) {
 async function makeAudio(filePath: string, duration = 1) {
   await exec(getFfmpegPath(), ["-y", "-f", "lavfi", "-i", `sine=frequency=880:sample_rate=44100:duration=${duration}`,
     "-c:a", "aac", filePath]);
+}
+async function makeStereoAudio(filePath: string, duration = 1) {
+  await exec(getFfmpegPath(), ["-y", "-f", "lavfi", "-i", `sine=frequency=880:sample_rate=44100:duration=${duration}`,
+    "-af", "pan=stereo|c0=c0|c1=c0", "-c:a", "aac", filePath]);
 }
 function config(source: AssetInfo, name = "result"): MixProjectConfig {
   return { projectDir: dir, outputDir: dir, slots: [{ name: "A", assets: [source], sortOrder: 0 }], bgmAssets: [], bgmTracks: [],
@@ -78,6 +82,22 @@ describe("export integrity and user controls", () => {
     const mixed = await volume(await exportConfig(mixedConfig));
 
     expect(Math.abs(sourceOnly - mixed)).toBeLessThan(1);
+  });
+  it("does not add automatic gain in the final audio limiter", async () => {
+    const bgm = path.join(dir, "background.m4a");
+    const processed = path.join(dir, "processed.wav");
+    await makeStereoAudio(bgm, 10);
+
+    const inputBgm = await volume(bgm);
+    await exec(getFfmpegPath(), ["-y", "-i", bgm, "-af", buildFinalAudioFilterChain(), "-c:a", "pcm_s16le", processed]);
+    const output = await volume(processed);
+
+    expect(output - inputBgm).toBeLessThanOrEqual(0.2);
+    expect(output - inputBgm).toBeGreaterThan(-0.5);
+  });
+  it("keeps the legacy limiter for a persisted v8 server task", () => {
+    expect(buildFinalAudioFilterChain(8)).toContain("alimiter=limit=0.95,");
+    expect(buildFinalAudioFilterChain(8)).not.toContain("level=false");
   });
   it("keeps an existing output intact", async () => {
     const source = path.join(dir, "source.mp4"); await makeVideo(source);

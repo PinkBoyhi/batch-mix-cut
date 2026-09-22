@@ -142,7 +142,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       activeBgmLabels.push(`[${label}]`);
     });
 
-    const finalAudioFilterChain = buildFinalAudioFilterChain();
+    const finalAudioFilterChain = buildFinalAudioFilterChain(config.audioPipelineVersion);
     if (activeBgmLabels.length > 0) {
       filters.push(
         // amix defaults to normalize=1, which divides every input by the input
@@ -553,10 +553,16 @@ function clampGain(value: number): number {
   return Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, value));
 }
 
-function buildFinalAudioFilterChain(): string {
+export function buildFinalAudioFilterChain(audioPipelineVersion?: number): string {
+  const preserveLegacyAutoLevel = audioPipelineVersion !== undefined && audioPipelineVersion < 9;
   const filters = [
     "aresample=async=1:first_pts=0",
-    "alimiter=limit=0.95",
+    // FFmpeg enables alimiter's auto-level compensation by default. That
+    // raises every signal by 1 / 0.95 even when loudness normalization is
+    // disabled. New tasks keep peak protection without adding gain. Persisted
+    // v8 tasks retain their original behavior so one batch stays consistent
+    // if the server is upgraded while that task is paused.
+    preserveLegacyAutoLevel ? "alimiter=limit=0.95" : "alimiter=limit=0.95:level=false",
     "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
   ].filter(Boolean);
   return filters.join(",");

@@ -76,6 +76,7 @@ export interface BgmTrack {
 export interface MixProjectConfig {
   projectDir: string;
   outputDir: string;
+  audioPipelineVersion?: number;
   combinationAlgorithmVersion?: number;
   workflowTitle?: string;
   slots: SegmentSlot[];

@@ -21,7 +21,7 @@ import { WorkflowMonitorClient } from "./workflowMonitorClient.js";
 
 const CONFIG_FILE = "remote-mix-server.json";
 const DEFAULT_SERVER_URL = "http://10.0.0.133:8787";
-const MIN_SERVER_AUDIO_PIPELINE_VERSION = 8;
+const MIN_SERVER_AUDIO_PIPELINE_VERSION = 9;
 const MIN_SERVER_COMBINATION_PIPELINE_VERSION = 4;
 const REQUEST_TIMEOUT_MS = 20_000;
 const TRANSFER_RETRY_ATTEMPTS = 3;
@@ -110,7 +110,7 @@ export class RemoteMixClient extends EventEmitter {
         serverUrl: activeSettings.serverUrl,
         hasToken: Boolean(activeSettings.token),
         ok: false,
-        message: "服务器混剪引擎较旧，无法保证完整音轨和音画同步；请更新服务器后再开始混剪。"
+        message: "服务器混剪引擎较旧，无法保证 BGM 原始响度、完整音轨和音画同步；请更新服务器后再开始混剪。"
       };
     }
     if (hasInsufficientStorage(health)) {
@@ -152,7 +152,7 @@ export class RemoteMixClient extends EventEmitter {
         throw new Error("服务器混剪引擎较旧，无法保证开头素材轮换；请先更新服务器后再开始混剪。");
       }
       if (!supportsAudioPipeline(health)) {
-        throw new Error("服务器混剪引擎较旧，无法保证完整音轨和音画同步；请先更新服务器后再开始混剪。");
+        throw new Error("服务器混剪引擎较旧，无法保证 BGM 原始响度、完整音轨和音画同步；请先更新服务器后再开始混剪。");
       }
       if (hasInsufficientStorage(health)) {
         throw new Error(describeInsufficientStorage(health));

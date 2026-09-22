@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { MixProjectConfig, WorkflowRecord } from "../../src/shared/types.js";
-import { cleanupExpiredProjects, describeQueuePosition, findRunnableProjectIndex, resolveCloudUploadVideos, shouldNotifyWorkflow, validateProjectIsolation } from "./mixServer.js";
+import { cleanupExpiredProjects, describeQueuePosition, findRunnableProjectIndex, resolveCloudUploadVideos, resolveRestoredAudioPipelineVersion, shouldNotifyWorkflow, validateProjectIsolation } from "./mixServer.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -119,6 +119,16 @@ describe("服务器并发项目隔离", () => {
     const config = projectConfig(projectRoot);
     config.outputDir = path.join(projectsRoot, "project-b", "outputs");
     expect(() => validateProjectIsolation(config, projectsRoot)).toThrow("输出目录不属于当前服务器项目");
+  });
+});
+
+describe("服务器任务音频管线恢复", () => {
+  it("把升级前没有版本号的任务固定为 v8", () => {
+    expect(resolveRestoredAudioPipelineVersion({})).toBe(8);
+  });
+
+  it("保留新任务已经保存的音频管线版本", () => {
+    expect(resolveRestoredAudioPipelineVersion({ audioPipelineVersion: 9 })).toBe(9);
   });
 });
 

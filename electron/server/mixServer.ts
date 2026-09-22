@@ -50,7 +50,7 @@ const minFreeBytes = Math.max(1, Number(process.env.MIX_SERVER_MIN_FREE_GB ?? "3
 const projectRetentionHours = readNonNegativeNumber(process.env.MIX_SERVER_PROJECT_RETENTION_HOURS, 24);
 const projectCleanupIntervalMs = 60 * 60 * 1000;
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
-const audioPipelineVersion = 8;
+const audioPipelineVersion = 9;
 const combinationPipelineVersion = 4;
 const jobRecoveryVersion = 1;
 const jobs = new Map<string, ServerJob>();
@@ -435,6 +435,7 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
   // Keep that ordering for them; current clients explicitly request v4.
   config = {
     ...config,
+    audioPipelineVersion,
     combinationAlgorithmVersion: config.combinationAlgorithmVersion ?? 3
   };
   const id = `srv_${Date.now()}_${randomUUID().slice(0, 8)}`;
@@ -514,6 +515,9 @@ async function restoreServerJobs(records: PersistedServerJob[]): Promise<void> {
   for (const record of records) {
     const restoredConfig: MixProjectConfig = {
       ...record.config,
+      // Tasks created before audio pipeline versioning keep the v8 limiter
+      // behavior for all remaining outputs after a server restart.
+      audioPipelineVersion: resolveRestoredAudioPipelineVersion(record.config),
       // Jobs persisted before algorithm versioning must resume with the exact
       // strict order they started with, even after the server is upgraded.
       combinationAlgorithmVersion: record.config.combinationAlgorithmVersion ?? 3
@@ -654,6 +658,10 @@ export function describeQueuePosition(position: number, queuedTotal: number, con
   const safeTotal = Math.max(safePosition, Math.floor(queuedTotal));
   const safeSlots = Math.max(1, Math.floor(concurrentSlots));
   return `服务器繁忙，当前排队第 ${safePosition}/${safeTotal} 位；最多同时处理 ${safeSlots} 个不同项目`;
+}
+
+export function resolveRestoredAudioPipelineVersion(config: Pick<MixProjectConfig, "audioPipelineVersion">): number {
+  return config.audioPipelineVersion ?? 8;
 }
 
 export function findRunnableProjectIndex(queuedProjectKeys: readonly string[], activeProjectKeys: ReadonlySet<string>): number {
