@@ -48,9 +48,16 @@ try {
   assert(snapshotA2.message.includes("排队第 1/1 位"), `排队位置不正确：${snapshotA2.message}`);
 
   await Promise.all([jobA1.jobId, jobA2.jobId, jobB.jobId].map((jobId) => api(`/api/jobs/${jobId}/stop`, { method: "POST" })));
+  await waitFor(async () => {
+    const snapshots = await Promise.all([jobA1.jobId, jobA2.jobId, jobB.jobId].map(readJob));
+    return snapshots.every((snapshot) => ["idle", "completed", "failed"].includes(snapshot.status));
+  }, 10_000, "临时验收任务停止超时");
   console.log("服务器项目隔离验收通过：运行槽位为 project-a + project-b，同项目重复任务保持排队。");
 } finally {
-  server?.kill("SIGTERM");
+  if (server?.exitCode === null) {
+    server.kill("SIGTERM");
+    await waitForExit(server);
+  }
   await fs.rm(workspace, { recursive: true, force: true });
 }
 
@@ -125,6 +132,20 @@ async function waitForServer() {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("临时验收服务器启动超时");
+}
+
+async function waitFor(check, timeoutMs, errorMessage) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(errorMessage);
+}
+
+function waitForExit(child) {
+  if (child.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve) => child.once("exit", resolve));
 }
 
 function run(command, args) {
