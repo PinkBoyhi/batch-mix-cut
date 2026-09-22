@@ -96,7 +96,6 @@ async function createProject() {
     exportMode: "video",
     sourceVolume: 1,
     bgmVolume: 0,
-    normalizeLoudness: false,
     videoProfile: { codec: "h264", audioCodec: "aac", preset: "slow", crf: 23, canvasMode: "original" },
     exportTarget: "local",
     draftSlots: []

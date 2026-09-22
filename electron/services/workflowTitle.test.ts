@@ -29,7 +29,6 @@ function config(overrides: Partial<MixProjectConfig>): MixProjectConfig {
     exportMode: "video",
     sourceVolume: 1,
     bgmVolume: 1,
-    normalizeLoudness: true,
     videoProfile: { codec: "h264", audioCodec: "aac", preset: "fast", crf: 20, canvasMode: "original" },
     exportTarget: "cloud",
     draftSlots: [],

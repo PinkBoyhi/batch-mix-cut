@@ -418,27 +418,6 @@ button:disabled {
   color: #143456;
 }
 
-.toggle-field {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 34px;
-  margin-top: 8px;
-  color: #365372;
-  font-size: 13px;
-}
-
-.toggle-field input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: #1769e0;
-}
-
-.bgm-toggle {
-  margin: 12px 0 4px;
-}
-
 .speed-mode-button {
   margin: 8px 0 2px;
 }

@@ -307,7 +307,6 @@ function registerIpc(): void {
       exportMode: "video",
       sourceVolume: 1,
       bgmVolume: 1,
-      normalizeLoudness: true,
       videoProfile: {
         codec: "h264",
         audioCodec: "aac",

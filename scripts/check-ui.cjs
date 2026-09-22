@@ -7,7 +7,7 @@ const bundle=fs.readdirSync(root+'/dist/assets').find(x=>x.endsWith('.js'));
 const bootstrap=`
 window.audit={ledgerCalls:0,ledgerResolved:0,jobListener:null};
 const a={id:'a',name:'a.mp4',path:'/audit/a.mp4',kind:'video',durationSeconds:1};
-const cfg={projectDir:'/audit',outputDir:'/audit',slots:[{name:'A',assets:[a],sortOrder:0}],bgmAssets:[],bgmRange:{fadeInSeconds:0,fadeOutSeconds:0},bgmTracks:[],maxCombinations:1,outputNamePattern:'成品',exportMode:'video',sourceVolume:1,bgmVolume:1,normalizeLoudness:false,videoProfile:{codec:'h264',audioCodec:'aac',preset:'veryfast',crf:20,canvasMode:'original'},exportTarget:'cloud',draftSlots:[]};
+const cfg={projectDir:'/audit',outputDir:'/audit',slots:[{name:'A',assets:[a],sortOrder:0}],bgmAssets:[],bgmRange:{fadeInSeconds:0,fadeOutSeconds:0},bgmTracks:[],maxCombinations:1,outputNamePattern:'成品',exportMode:'video',sourceVolume:1,bgmVolume:1,videoProfile:{codec:'h264',audioCodec:'aac',preset:'veryfast',crf:20,canvasMode:'original'},exportTarget:'cloud',draftSlots:[]};
 const combo={id:'mix_0001',index:0,slotAssets:{A:a},targetVideoPath:'/audit/videos/成品_001.mp4',targetDraftPath:'/audit/drafts/1'};
 window.batchMix={
 selectDirectory:async()=>'/audit',createManualProject:async()=>({config:cfg,combinations:[combo],warnings:[]}),

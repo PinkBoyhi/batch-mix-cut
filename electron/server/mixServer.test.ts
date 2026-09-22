@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { MixProjectConfig, WorkflowRecord } from "../../src/shared/types.js";
-import { cleanupExpiredProjects, describeQueuePosition, findRunnableProjectIndex, resolveCloudUploadVideos, resolveRestoredAudioPipelineVersion, shouldNotifyWorkflow, validateProjectIsolation } from "./mixServer.js";
+import { cleanupExpiredProjects, describeQueuePosition, findRunnableProjectIndex, prepareServerJobConfig, resolveCloudUploadVideos, resolveRestoredAudioPipelineVersion, shouldNotifyWorkflow, validateProjectIsolation } from "./mixServer.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -130,6 +130,13 @@ describe("服务器任务音频管线恢复", () => {
   it("保留新任务已经保存的音频管线版本", () => {
     expect(resolveRestoredAudioPipelineVersion({ audioPipelineVersion: 9 })).toBe(9);
   });
+
+  it("新任务删除旧客户端残留的统一响度字段并固定使用 v10", () => {
+    const legacy = { ...projectConfig(path.join(os.tmpdir(), "mix-work", "projects", "legacy")), normalizeLoudness: true };
+    const prepared = prepareServerJobConfig(legacy);
+    expect(prepared.audioPipelineVersion).toBe(10);
+    expect(prepared).not.toHaveProperty("normalizeLoudness");
+  });
 });
 
 function workflowRecord(overrides: Partial<WorkflowRecord>): WorkflowRecord {
@@ -171,7 +178,6 @@ function projectConfig(projectRoot: string): MixProjectConfig {
     exportMode: "video",
     sourceVolume: 1,
     bgmVolume: 0.7,
-    normalizeLoudness: true,
     videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 23, canvasMode: "vertical_9_16" },
     exportTarget: "local",
     draftSlots: []

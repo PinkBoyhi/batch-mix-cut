@@ -48,8 +48,8 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     const { width, height } = resolveCanvasSize(config, first);
     const segmentDurations = videoAssets.map(resolveSegmentDuration);
     const totalDuration = segmentDurations.reduce((sum, duration) => sum + duration, 0);
-    const normalizeLoudness = config.normalizeLoudness !== false;
-    const sourceLoudness = normalizeLoudness ? await resolveSourceLoudness(videoAssets, signal) : [];
+    const preserveLegacyLoudness = shouldPreserveLegacyLoudness(config);
+    const sourceLoudness = preserveLegacyLoudness ? await resolveSourceLoudness(videoAssets, signal) : [];
     // BGM can come from a cloud asset as well as from local disk. Resolve it through
     // the same cache path as video assets so the server never asks FFmpeg to mix an
     // unreachable remote URL directly.
@@ -60,7 +60,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       }))
     );
     const bgmTargetDb = resolveBgmTargetDb(sourceLoudness);
-    const bgmLoudness = normalizeLoudness
+    const bgmLoudness = preserveLegacyLoudness
       ? await resolveBgmLoudness(bgmTracks, bgmTargetDb, signal)
       : [];
     const hasEnabledSourceAudio = config.sourceVolume > 0 && videoAssets.some((asset) => asset.hasAudio);
@@ -566,6 +566,13 @@ export function buildFinalAudioFilterChain(audioPipelineVersion?: number): strin
     "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
   ].filter(Boolean);
   return filters.join(",");
+}
+
+export function shouldPreserveLegacyLoudness(config: Pick<MixProjectConfig, "audioPipelineVersion">): boolean {
+  const legacyFlag = (config as { normalizeLoudness?: unknown }).normalizeLoudness;
+  return config.audioPipelineVersion !== undefined
+    && config.audioPipelineVersion < 10
+    && legacyFlag !== false;
 }
 
 function formatStereoDelay(delayMs: number): string {

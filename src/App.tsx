@@ -542,7 +542,7 @@ function TaskWorkspace({
     combinations.length > 0 &&
     !hasActiveTask && !startingJob && !busy && !cloudBusy &&
     (mixExecutionTarget === "local" || (remoteMixSettings.ok === true && remoteMixSettings.hasToken));
-  const speedModeEnabled = Boolean(config && config.normalizeLoudness === false && config.videoProfile.preset === "veryfast");
+  const speedModeEnabled = Boolean(config && config.videoProfile.preset === "veryfast");
   const slotSummary = useMemo(() => {
     if (!config) return "未创建项目";
     if (config.slots.length === 0) return "还没有段落";
@@ -968,7 +968,6 @@ function TaskWorkspace({
   function toggleSpeedMode() {
     if (!config) return;
     updateConfig({
-      normalizeLoudness: speedModeEnabled,
       videoProfile: {
         ...config.videoProfile,
         preset: speedModeEnabled ? "fast" : "veryfast"
@@ -1970,14 +1969,6 @@ function TaskWorkspace({
                 <ListPlus size={16} />
                 <span>添加 BGM 轨道</span>
               </button>
-              <label className="toggle-field bgm-toggle">
-                <input
-                  type="checkbox"
-                  checked={config.normalizeLoudness !== false}
-                  onChange={(event) => updateConfig({ normalizeLoudness: event.target.checked })}
-                />
-                <span>统一响度</span>
-              </label>
               <div className="bgm-track-list">
                 {normalizeBgmTracks(config).map((track) => (
                   <div className="bgm-track-card" key={track.id}>

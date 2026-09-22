@@ -12,7 +12,7 @@ beforeEach(async () => {
   vi.clearAllMocks(); dir = await fs.mkdtemp(path.join(os.tmpdir(), "job-manager-"));
   config = { projectDir: dir, outputDir: dir, slots: [{ name: "A", sortOrder: 0, assets: [{ id: "a", path: "a.mp4", name: "a.mp4", kind: "video" }, { id: "b", path: "b.mp4", name: "b.mp4", kind: "video" }] }],
     bgmAssets: [], bgmTracks: [], bgmRange: { fadeInSeconds: 0, fadeOutSeconds: 0 }, maxCombinations: 2, outputNamePattern: "result", exportMode: "video", exportTarget: "local",
-    sourceVolume: 1, bgmVolume: 0, normalizeLoudness: false, videoProfile: { codec: "h264", audioCodec: "aac", preset: "fast", crf: 20, canvasMode: "original" }, draftSlots: [] };
+    sourceVolume: 1, bgmVolume: 0, videoProfile: { codec: "h264", audioCodec: "aac", preset: "fast", crf: 20, canvasMode: "original" }, draftSlots: [] };
 });
 afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
 function terminal(manager: JobManager) {

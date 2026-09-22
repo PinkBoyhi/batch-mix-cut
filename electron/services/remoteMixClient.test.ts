@@ -124,8 +124,7 @@ describe("toRemoteAsset", () => {
         exportMode: "video",
         sourceVolume: 1,
         bgmVolume: 1,
-        normalizeLoudness: false,
-        videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 23, canvasMode: "original" },
+          videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 23, canvasMode: "original" },
         exportTarget: "local",
         draftSlots: []
       };
@@ -161,7 +160,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 9, combinationPipelineVersion: 4 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 10, combinationPipelineVersion: 4 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {
@@ -191,7 +190,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 9, combinationPipelineVersion: 4 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 10, combinationPipelineVersion: 4 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "task-a-token") {
@@ -223,7 +222,7 @@ describe("toRemoteAsset", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 9, combinationPipelineVersion: 3 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 10, combinationPipelineVersion: 3 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {
@@ -248,12 +247,12 @@ describe("toRemoteAsset", () => {
     }
   });
 
-  it("rejects a v8 server that still applies automatic final gain", async () => {
+  it("rejects a v9 server that can still enable automatic loudness gain", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "remote-mix-client-"));
     const server = http.createServer((request, response) => {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 8, combinationPipelineVersion: 4 }));
+        response.end(JSON.stringify({ ok: true, workspaceRoot: "/tmp/mix-work", audioPipelineVersion: 9, combinationPipelineVersion: 4 }));
         return;
       }
       if (request.url === "/api/auth/check" && request.headers["x-mix-token"] === "test-token") {

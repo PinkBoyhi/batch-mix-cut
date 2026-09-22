@@ -50,7 +50,7 @@ const minFreeBytes = Math.max(1, Number(process.env.MIX_SERVER_MIN_FREE_GB ?? "3
 const projectRetentionHours = readNonNegativeNumber(process.env.MIX_SERVER_PROJECT_RETENTION_HOURS, 24);
 const projectCleanupIntervalMs = 60 * 60 * 1000;
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
-const audioPipelineVersion = 9;
+const audioPipelineVersion = 10;
 const combinationPipelineVersion = 4;
 const jobRecoveryVersion = 1;
 const jobs = new Map<string, ServerJob>();
@@ -433,11 +433,7 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
   await assertStorageCapacity();
   // Clients before 0.1.61 previewed and submitted the strict v3 ordering.
   // Keep that ordering for them; current clients explicitly request v4.
-  config = {
-    ...config,
-    audioPipelineVersion,
-    combinationAlgorithmVersion: config.combinationAlgorithmVersion ?? 3
-  };
+  config = prepareServerJobConfig(config);
   const id = `srv_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const existingWorkflow = requestedWorkflowId ? workflowStore.get(requestedWorkflowId) : undefined;
   const workflow = existingWorkflow ?? workflowStore.create({
@@ -475,6 +471,17 @@ async function startJob(config: MixProjectConfig, requestedWorkflowId?: string):
   refreshQueuedJobPositions();
   await dispatchQueuedJobs();
   return job;
+}
+
+export function prepareServerJobConfig(config: MixProjectConfig): MixProjectConfig {
+  const { normalizeLoudness: _removedLoudnessSetting, ...configWithoutLoudness } = config as MixProjectConfig & {
+    normalizeLoudness?: unknown;
+  };
+  return {
+    ...configWithoutLoudness,
+    audioPipelineVersion,
+    combinationAlgorithmVersion: config.combinationAlgorithmVersion ?? 3
+  };
 }
 
 function registerServerJob(job: ServerJob): void {

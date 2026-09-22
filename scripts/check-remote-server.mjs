@@ -200,7 +200,6 @@ async function createWorkflowFixture(rootDir, mode) {
     // 保留强原声，验证背景音乐不会只存在于音轨里却被人声完全盖住。
     sourceVolume: 1,
     bgmVolume: 1,
-    normalizeLoudness: true,
     videoProfile: { codec: "h264", audioCodec: "aac", preset: "ultrafast", crf: 30, canvasMode: "original" },
     exportTarget: mode === "remote" ? "server" : "local",
     draftSlots: []

@@ -88,7 +88,6 @@ export interface MixProjectConfig {
   exportMode: ExportMode;
   sourceVolume: number;
   bgmVolume: number;
-  normalizeLoudness: boolean;
   videoProfile: VideoProfile;
   exportTarget: ExportTarget;
   templateDraftPath?: string;

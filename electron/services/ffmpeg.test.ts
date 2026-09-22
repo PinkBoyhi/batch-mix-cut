@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AssetInfo, MixCombination, MixProjectConfig } from "../../src/shared/types.js";
-import { exportVideo, mergeAssetMetadata, resolveBgmTargetDb } from "./ffmpeg.js";
+import { exportVideo, mergeAssetMetadata, resolveBgmTargetDb, shouldPreserveLegacyLoudness } from "./ffmpeg.js";
 import { getFfmpegPath } from "./ffmpegBinaries.js";
 import { probeAsset } from "./mediaProbe.js";
 
@@ -34,10 +34,14 @@ describe("exportVideo audio output", () => {
     ).toEqual(expect.objectContaining({ hasAudio: true, durationSeconds: 5, width: 1080, height: 1920 }));
   });
 
-  it("raises BGM to an audible background level when source footage is much louder", () => {
+  it("keeps the legacy v9 loudness calculation only for unfinished old tasks", () => {
     expect(resolveBgmTargetDb([{ meanDb: -11.1, gainDb: -1.5 }])).toBeCloseTo(-18.6);
     expect(resolveBgmTargetDb([{ meanDb: -30, gainDb: 0 }])).toBe(-23);
     expect(resolveBgmTargetDb([])).toBe(-23);
+    expect(shouldPreserveLegacyLoudness({})).toBe(false);
+    expect(shouldPreserveLegacyLoudness({ audioPipelineVersion: 10 })).toBe(false);
+    expect(shouldPreserveLegacyLoudness({ audioPipelineVersion: 9, normalizeLoudness: true } as { audioPipelineVersion: number })).toBe(true);
+    expect(shouldPreserveLegacyLoudness({ audioPipelineVersion: 9, normalizeLoudness: false } as { audioPipelineVersion: number })).toBe(false);
   });
 
   it(
@@ -92,8 +96,7 @@ describe("exportVideo audio output", () => {
         exportMode: "video",
         sourceVolume: 1,
         bgmVolume: 1,
-        normalizeLoudness: false,
-        videoProfile: {
+          videoProfile: {
           codec: "h264",
           audioCodec: "aac",
           preset: "veryfast",
@@ -174,8 +177,7 @@ describe("exportVideo audio output", () => {
         exportMode: "video",
         sourceVolume: 1,
         bgmVolume: 1,
-        normalizeLoudness: false,
-        videoProfile: {
+          videoProfile: {
           codec: "h264",
           audioCodec: "aac",
           preset: "veryfast",
@@ -232,8 +234,7 @@ describe("exportVideo audio output", () => {
         exportMode: "video",
         sourceVolume: 1,
         bgmVolume: 1,
-        normalizeLoudness: false,
-        videoProfile: {
+          videoProfile: {
           codec: "h264",
           audioCodec: "aac",
           preset: "veryfast",
@@ -281,7 +282,6 @@ describe("exportVideo audio output", () => {
       exportMode: "video",
       sourceVolume: 1,
       bgmVolume: 1,
-      normalizeLoudness: false,
       videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 28, canvasMode: "original" },
       exportTarget: "local",
       draftSlots: []
@@ -297,7 +297,7 @@ describe("exportVideo audio output", () => {
   }, 30000);
 
   it(
-    "normalizes a very quiet source before applying user volume",
+    "does not automatically raise a very quiet source",
     async () => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "yibo-mix-audio-"));
       tempDirs.push(tempDir);
@@ -350,8 +350,7 @@ describe("exportVideo audio output", () => {
         exportMode: "video",
         sourceVolume: 1,
         bgmVolume: 1,
-        normalizeLoudness: true,
-        videoProfile: {
+          videoProfile: {
           codec: "h264",
           audioCodec: "aac",
           preset: "veryfast",
@@ -369,10 +368,11 @@ describe("exportVideo audio output", () => {
         targetDraftPath: path.join(tempDir, "draft")
       };
 
+      const inputMeanVolume = await measureMeanVolume(inputPath);
       await exportVideo(config, combination).promise;
 
       const meanVolume = await measureMeanVolume(outputPath);
-      expect(meanVolume).toBeGreaterThan(-35);
+      expect(meanVolume - inputMeanVolume).toBeLessThan(2);
     },
     30000
   );
@@ -442,8 +442,7 @@ describe("exportVideo audio output", () => {
         exportMode: "video",
         sourceVolume: 0,
         bgmVolume: 1,
-        normalizeLoudness: false,
-        videoProfile: {
+          videoProfile: {
           codec: "h264",
           audioCodec: "aac",
           preset: "veryfast",

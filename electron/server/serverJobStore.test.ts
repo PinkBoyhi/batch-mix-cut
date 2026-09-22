@@ -55,7 +55,6 @@ function record(id: string, createdAt: string, completed: number): PersistedServ
       exportMode: "video",
       sourceVolume: 1,
       bgmVolume: 0,
-      normalizeLoudness: false,
       videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 23, canvasMode: "original" },
       exportTarget: "local",
       draftSlots: []

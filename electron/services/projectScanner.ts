@@ -98,7 +98,6 @@ export async function scanProject(projectDir: string, templateDraftOverride?: st
     exportMode: hasTemplate ? "both" : "video",
     sourceVolume: 1,
     bgmVolume: 1,
-    normalizeLoudness: true,
     videoProfile: {
       codec: "h264",
       audioCodec: "aac",

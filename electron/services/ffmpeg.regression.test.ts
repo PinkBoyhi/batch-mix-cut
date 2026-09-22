@@ -40,7 +40,7 @@ async function makeStereoAudio(filePath: string, duration = 1) {
 function config(source: AssetInfo, name = "result"): MixProjectConfig {
   return { projectDir: dir, outputDir: dir, slots: [{ name: "A", assets: [source], sortOrder: 0 }], bgmAssets: [], bgmTracks: [],
     bgmRange: { fadeInSeconds: 0, fadeOutSeconds: 0 }, maxCombinations: 1, outputNamePattern: name, exportMode: "video", exportTarget: "local",
-    sourceVolume: 1, bgmVolume: 0, normalizeLoudness: false, videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 28, canvasMode: "original" }, draftSlots: [] };
+    sourceVolume: 1, bgmVolume: 0, videoProfile: { codec: "h264", audioCodec: "aac", preset: "veryfast", crf: 28, canvasMode: "original" }, draftSlots: [] };
 }
 function combination(c: MixProjectConfig) {
   return createCombinations(c.slots, c.bgmAssets, dir, 1, c.outputNamePattern, c.bgmTracks)[0];
@@ -59,15 +59,15 @@ describe("export integrity and user controls", () => {
     const output = await exportConfig(config(await probeAsset(asset(source)), "second"));
     expect((await probeAsset(asset(output))).videoDurationSeconds).toBeCloseTo(3, 1);
   });
-  it.each([false, true])("preserves 5 percent volume with normalization=%s", async (normalizeLoudness) => {
+  it("preserves the requested 5 percent volume", async () => {
     const source = path.join(dir, "source.mp4"); await makeVideo(source);
-    const c = { ...config(asset(source), "full"), normalizeLoudness };
+    const c = config(asset(source), "full");
     const full = await volume(await exportConfig(c));
     const quiet = await volume(await exportConfig({ ...c, sourceVolume: 0.05, outputNamePattern: "quiet" }));
     expect(full - quiet).toBeGreaterThan(24);
     expect(full - quiet).toBeLessThan(28);
   });
-  it("does not lower the original voice when BGM is added with loudness normalization off", async () => {
+  it("does not lower the original voice when BGM is added", async () => {
     const source = path.join(dir, "source.mp4");
     const bgm = path.join(dir, "background.m4a");
     await Promise.all([makeVideo(source), makeAudio(bgm)]);

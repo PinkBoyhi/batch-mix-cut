@@ -23,7 +23,7 @@ beforeEach(async () => {
   server = http.createServer((request, response) => {
     const json = (data: unknown, code = 200) => { response.writeHead(code, { "content-type": "application/json" }); response.end(JSON.stringify(data)); };
     request.resume();
-    if (request.url === "/health") return json({ ok: true, workspaceRoot: "/server", audioPipelineVersion: 9, combinationPipelineVersion: 4 });
+    if (request.url === "/health") return json({ ok: true, workspaceRoot: "/server", audioPipelineVersion: 10, combinationPipelineVersion: 4 });
     if (request.url?.startsWith("/api/files/upload")) {
       uploaded();
       if (mode === "upload-slow") return;
@@ -45,7 +45,7 @@ beforeEach(async () => {
   client = new RemoteMixClient(() => dir);
   config = { projectDir: dir, outputDir: dir, slots: [{ name: "A", sortOrder: 0, assets: [{ id: "a", kind: "video", name: "source.mp4", path: path.join(dir, "source.mp4") }] }],
     bgmAssets: [], bgmTracks: [], bgmRange: { fadeInSeconds: 0, fadeOutSeconds: 0 }, maxCombinations: 1, outputNamePattern: "result", exportMode: "video", exportTarget: "local",
-    sourceVolume: 1, bgmVolume: 0, normalizeLoudness: false, videoProfile: { codec: "h264", audioCodec: "aac", preset: "fast", crf: 20, canvasMode: "original" }, draftSlots: [] };
+    sourceVolume: 1, bgmVolume: 0, videoProfile: { codec: "h264", audioCodec: "aac", preset: "fast", crf: 20, canvasMode: "original" }, draftSlots: [] };
 });
 afterEach(async () => { server.closeAllConnections(); await new Promise<void>((r) => server.close(() => r())); await fs.rm(dir, { recursive: true, force: true }); });
 async function eventually(condition: () => boolean) {
