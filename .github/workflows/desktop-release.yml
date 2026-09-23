@@ -96,6 +96,27 @@ jobs:
         run: |
           pnpm install --frozen-lockfile || (sleep 20 && pnpm install --frozen-lockfile)
 
+      - name: Require Apple signing and notarization credentials
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MACOS_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          MACOS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${MACOS_CERTIFICATE_P12_BASE64:-}" ] || missing+=(MACOS_CERTIFICATE_P12_BASE64)
+          [ -n "${MACOS_CERTIFICATE_PASSWORD:-}" ] || missing+=(MACOS_CERTIFICATE_PASSWORD)
+          [ -n "${MACOS_APPLE_ID:-}" ] || missing+=(APPLE_ID)
+          [ -n "${MACOS_APPLE_APP_SPECIFIC_PASSWORD:-}" ] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
+          [ -n "${MACOS_APPLE_TEAM_ID:-}" ] || missing+=(APPLE_TEAM_ID)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::macOS 发布已停止：缺少 Apple 签名或公证 Secret：${missing[*]}"
+            exit 1
+          fi
+
       - name: Check types and run test suite
         run: pnpm typecheck && pnpm test
 
@@ -109,23 +130,18 @@ jobs:
           MACOS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          if [ -n "${MACOS_CERTIFICATE_P12_BASE64:-}" ] \
-            && [ -n "${MACOS_CERTIFICATE_PASSWORD:-}" ] \
-            && [ -n "${MACOS_APPLE_ID:-}" ] \
-            && [ -n "${MACOS_APPLE_APP_SPECIFIC_PASSWORD:-}" ] \
-            && [ -n "${MACOS_APPLE_TEAM_ID:-}" ]; then
-            export CSC_IDENTITY_AUTO_DISCOVERY=true
-            export CSC_LINK="$MACOS_CERTIFICATE_P12_BASE64"
-            export CSC_KEY_PASSWORD="$MACOS_CERTIFICATE_PASSWORD"
-            export APPLE_ID="$MACOS_APPLE_ID"
-            export APPLE_APP_SPECIFIC_PASSWORD="$MACOS_APPLE_APP_SPECIFIC_PASSWORD"
-            export APPLE_TEAM_ID="$MACOS_APPLE_TEAM_ID"
-          else
-            export CSC_IDENTITY_AUTO_DISCOVERY=false
-            unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
-          fi
+          export CSC_IDENTITY_AUTO_DISCOVERY=true
+          export CSC_LINK="$MACOS_CERTIFICATE_P12_BASE64"
+          export CSC_KEY_PASSWORD="$MACOS_CERTIFICATE_PASSWORD"
+          export APPLE_ID="$MACOS_APPLE_ID"
+          export APPLE_APP_SPECIFIC_PASSWORD="$MACOS_APPLE_APP_SPECIFIC_PASSWORD"
+          export APPLE_TEAM_ID="$MACOS_APPLE_TEAM_ID"
           pnpm build
           pnpm exec electron-builder --mac --arm64 --publish never
+
+      - name: Verify Developer ID signature and notarization ticket
+        shell: bash
+        run: bash scripts/check-macos-signing.sh "$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
 
       - name: Verify desktop UI workflow
         run: pnpm smoke:ui
