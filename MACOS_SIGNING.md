@@ -25,7 +25,7 @@
 
 Secrets 配置后，推送下一个 `v*` 标签会自动执行：Developer ID 签名、启用 Hardened Runtime、提交 Apple Notary Service、将公证票据附加到应用、验证签名。
 
-发布流程不再允许跳过签名。任一 Secret 缺失时，macOS 构建会明确失败，也不会上传一个被 Gatekeeper 判定为“已损坏”的安装包。构建完成后还会挂载 DMG，逐项验证 Developer ID、Team ID、严格签名、Gatekeeper 接受结果和公证票据。
+发布流程不会再把未签名应用冒充正式安装包。完整 Secrets 存在时，构建完成后会挂载 DMG，逐项验证 Developer ID、Team ID、严格签名、Gatekeeper 接受结果和公证票据。Secrets 缺失时只生成文件名带 `UNSIGNED-PREVIEW` 的测试包，对完整应用执行 ad-hoc 结构签名且不生成自动更新元数据；这种测试包仍不能替代正式签名和公证。
 
 本机可检查发布包中的应用：
 

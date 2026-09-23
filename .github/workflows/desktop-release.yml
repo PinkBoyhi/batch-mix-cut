@@ -96,7 +96,8 @@ jobs:
         run: |
           pnpm install --frozen-lockfile || (sleep 20 && pnpm install --frozen-lockfile)
 
-      - name: Require Apple signing and notarization credentials
+      - name: Detect Apple signing and notarization credentials
+        id: signing
         shell: bash
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
@@ -106,21 +107,22 @@ jobs:
           MACOS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          missing=()
-          [ -n "${MACOS_CERTIFICATE_P12_BASE64:-}" ] || missing+=(MACOS_CERTIFICATE_P12_BASE64)
-          [ -n "${MACOS_CERTIFICATE_PASSWORD:-}" ] || missing+=(MACOS_CERTIFICATE_PASSWORD)
-          [ -n "${MACOS_APPLE_ID:-}" ] || missing+=(APPLE_ID)
-          [ -n "${MACOS_APPLE_APP_SPECIFIC_PASSWORD:-}" ] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
-          [ -n "${MACOS_APPLE_TEAM_ID:-}" ] || missing+=(APPLE_TEAM_ID)
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::macOS 发布已停止：缺少 Apple 签名或公证 Secret：${missing[*]}"
-            exit 1
+          if [ -n "${MACOS_CERTIFICATE_P12_BASE64:-}" ] \
+            && [ -n "${MACOS_CERTIFICATE_PASSWORD:-}" ] \
+            && [ -n "${MACOS_APPLE_ID:-}" ] \
+            && [ -n "${MACOS_APPLE_APP_SPECIFIC_PASSWORD:-}" ] \
+            && [ -n "${MACOS_APPLE_TEAM_ID:-}" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置完整 Apple 签名信息，将只发布文件名带 UNSIGNED-PREVIEW 的测试包。"
           fi
 
       - name: Check types and run test suite
         run: pnpm typecheck && pnpm test
 
-      - name: Build macOS installer
+      - name: Build signed and notarized macOS installer
+        if: steps.signing.outputs.signed == 'true'
         shell: bash
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
@@ -140,8 +142,43 @@ jobs:
           pnpm exec electron-builder --mac --arm64 --publish never
 
       - name: Verify Developer ID signature and notarization ticket
+        if: steps.signing.outputs.signed == 'true'
         shell: bash
         run: bash scripts/check-macos-signing.sh "$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
+
+      - name: Build clearly labeled ad-hoc macOS preview
+        if: steps.signing.outputs.signed != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CSC_IDENTITY_AUTO_DISCOVERY=false
+          pnpm build
+          pnpm exec electron-builder --mac --arm64 --publish never
+          app_path="$(find release/mac-arm64 -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [ -z "$app_path" ]; then
+            echo "::error::没有找到待签名的 macOS 应用。"
+            exit 1
+          fi
+          codesign --force --deep --sign - --timestamp=none "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          preview_dir="$RUNNER_TEMP/yibo-mac-preview"
+          mkdir -p "$preview_dir"
+          pnpm exec electron-builder --mac dmg zip --arm64 --prepackaged "$app_path" --publish never --config.directories.output="$preview_dir"
+          version="$(node -p "require('./package.json').version")"
+          rm -f release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml
+          mv "$preview_dir/YiboBioMixCut-$version-arm64.dmg" "release/YiboBioMixCut-$version-arm64-UNSIGNED-PREVIEW.dmg"
+          mv "$preview_dir/YiboBioMixCut-$version-arm64.dmg.blockmap" "release/YiboBioMixCut-$version-arm64-UNSIGNED-PREVIEW.dmg.blockmap"
+          mv "$preview_dir/YiboBioMixCut-$version-arm64.zip" "release/YiboBioMixCut-$version-arm64-UNSIGNED-PREVIEW.zip"
+          mv "$preview_dir/YiboBioMixCut-$version-arm64.zip.blockmap" "release/YiboBioMixCut-$version-arm64-UNSIGNED-PREVIEW.zip.blockmap"
+          cat > release/macOS-UNSIGNED-PREVIEW.txt <<'EOF'
+          此包已完成应用结构签名，但没有 Apple Developer ID 和公证票据，仅用于安装验证。
+          macOS 可能要求在“系统设置 > 隐私与安全性”中确认打开。正式分发仍需配置 Apple Developer Program 证书。
+          EOF
+
+      - name: Verify ad-hoc macOS preview structure
+        if: steps.signing.outputs.signed != 'true'
+        shell: bash
+        run: bash scripts/check-macos-signing.sh "$(find release -maxdepth 1 -name '*-UNSIGNED-PREVIEW.dmg' -print -quit)" --allow-adhoc-preview
 
       - name: Verify desktop UI workflow
         run: pnpm smoke:ui
@@ -162,6 +199,7 @@ jobs:
             release/latest-mac.yml
             release/*.dmg.blockmap
             release/*.zip.blockmap
+            release/macOS-UNSIGNED-PREVIEW.txt
 
   publish-release:
     if: ${{ always() && needs.build-windows.result == 'success' && needs.build-mac.result == 'success' }}

@@ -1,5 +1,11 @@
 # 更新日志
 
+## 0.1.65
+
+- 修复 macOS 发布包只有残缺临时签名、被 Gatekeeper 误报为“应用已损坏”的问题。
+- 未配置 Apple Developer 证书时，改为对完整应用执行可验证的 ad-hoc 结构签名，并将安装包明确标记为 `UNSIGNED-PREVIEW`，仅用于安装测试。
+- 配置 Apple Developer 证书后，发布流程会强制验证 Developer ID、Team ID、严格签名、Gatekeeper 接受结果和苹果公证票据。
+
 ## 0.1.64
 
 - 删除“统一响度”开关及自动响度增益处理；原声和 BGM 只按各自音量滑杆的比例混合。
