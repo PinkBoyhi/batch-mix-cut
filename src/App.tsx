@@ -44,6 +44,7 @@ import type {
   CloudVideoRotation,
   CloudVideoType,
   CloudUploadProgress,
+  CloudUploadPauseState,
   ExportTarget,
   ExportMode,
   JobStatus,
@@ -156,14 +157,18 @@ export default function App() {
     setNextTaskNumber((currentNumber) => currentNumber + 1);
   }
 
-  function closeTaskTab(taskId: string) {
+  async function closeTaskTab(taskId: string) {
     const tabIndex = tabs.findIndex((tab) => tab.id === taskId);
     const tab = tabs[tabIndex];
     if (!tab || tabs.length === 1 || isTaskInProgress(tab.status)) {
       return;
     }
     const nextActiveTab = tabs[tabIndex - 1] ?? tabs[tabIndex + 1];
-    void window.batchMix?.disposeTask(taskId).catch(() => undefined);
+    try {
+      await window.batchMix?.disposeTask(taskId);
+    } catch {
+      return;
+    }
     setTabs((currentTabs) => currentTabs.filter((currentTab) => currentTab.id !== taskId));
     if (activeTabId === taskId && nextActiveTab) {
       setActiveTabId(nextActiveTab.id);
@@ -216,7 +221,7 @@ export default function App() {
                 <button
                   className="task-tab-close"
                   disabled={closeDisabled}
-                  onClick={() => closeTaskTab(tab.id)}
+                  onClick={() => void closeTaskTab(tab.id)}
                   title={isTaskInProgress(tab.status) ? "任务运行中，请先停止" : "关闭任务标签"}
                   type="button"
                 >
@@ -274,6 +279,7 @@ function TaskWorkspace({
   const [cloudPhone, setCloudPhone] = useState("");
   const [cloudStatus, setCloudStatus] = useState<string | undefined>();
   const [cloudBusy, setCloudBusy] = useState(false);
+  const [cloudUploadPauseState, setCloudUploadPauseState] = useState<CloudUploadPauseState>("idle");
   const [cloudVideos, setCloudVideos] = useState<CloudVideo[]>([]);
   const [cloudVideoTotal, setCloudVideoTotal] = useState(0);
   const [cloudVideoTypes, setCloudVideoTypes] = useState<CloudVideoType[]>([]);
@@ -337,6 +343,16 @@ function TaskWorkspace({
     return api.onCloudProgress((update: CloudUploadProgress) => {
       if (update.taskId !== taskId) return;
       setCloudStatus(formatCloudBatchProgress(update.message, cloudBatchProgress));
+      if (update.stage === "paused") {
+        setCloudUploadPauseState("paused");
+      } else if (update.stage === "uploading") {
+        setCloudUploadPauseState((current) => current === "pause_requested" ? current : "running");
+      }
+      if (update.localPath && update.uploadedUrl) {
+        setCloudImportRows((currentRows) => currentRows.map((row) =>
+          row.localPath === update.localPath ? { ...row, url: update.uploadedUrl ?? row.url, submitted: false, uploadError: undefined } : row
+        ));
+      }
       if (update.videos) {
         setCloudImportResults((current) => mergeCloudImportResults(current, update.videos!.map((video) => ({
           videoId: video.videoId,
@@ -349,8 +365,11 @@ function TaskWorkspace({
   }, [api, cloudBatchProgress, taskId]);
 
   useEffect(() => {
-    onTaskStatusChange(taskId, startingJob ? "running" : job.status);
-  }, [job.status, startingJob, onTaskStatusChange, taskId]);
+    const status = cloudBusy
+      ? cloudUploadPauseState === "paused" ? "paused" : "running"
+      : startingJob ? "running" : job.status;
+    onTaskStatusChange(taskId, status);
+  }, [cloudBusy, cloudUploadPauseState, job.status, startingJob, onTaskStatusChange, taskId]);
 
   useEffect(() => {
     if (config?.outputDir) {
@@ -1300,6 +1319,7 @@ function TaskWorkspace({
         const batchProgress = createCloudBatchProgress(batchIndex, batches.length, videos.length, completedVideos, sourceBatch.length);
         setCloudBatchProgress(batchProgress);
         setCloudStatus(formatCloudBatchStartStatus(batchProgress, automatic ? "混剪已完成，正在上传本地成片" : "正在上传本地成片"));
+        setCloudUploadPauseState("running");
 
         const result = await api.uploadCloudLocalVideos(
           taskId,
@@ -1359,7 +1379,27 @@ function TaskWorkspace({
       return false;
     } finally {
       setCloudBusy(false);
+      setCloudUploadPauseState("idle");
       setCloudBatchProgress(undefined);
+    }
+  }
+
+  async function toggleCloudUploadPause() {
+    if (!api || cloudUploadPauseState === "idle") return;
+    try {
+      if (cloudUploadPauseState === "running") {
+        const state = await api.pauseCloudUpload(taskId);
+        setCloudUploadPauseState(state);
+        setCloudStatus(state === "idle"
+          ? "当前没有可暂停的云管家上传"
+          : "已请求暂停；当前视频会先完整上传，然后暂停后续队列。");
+        return;
+      }
+      const state = await api.resumeCloudUpload(taskId);
+      setCloudUploadPauseState(state);
+      setCloudStatus(state === "idle" ? "上传任务已结束" : "已继续上传，将从下一条待上传视频继续。");
+    } catch (err) {
+      setCloudStatus(toMessage(err));
     }
   }
 
@@ -2519,6 +2559,12 @@ function TaskWorkspace({
                     >
                       查询结果
                     </button>
+                    {cloudUploadPauseState !== "idle" && (
+                      <button className="secondary-inline cloud-upload-pause" type="button" onClick={() => void toggleCloudUploadPause()}>
+                        {cloudUploadPauseState === "running" ? <Pause size={16} /> : <Play size={16} />}
+                        {cloudUploadPauseState === "running" ? "暂停上传" : "继续上传"}
+                      </button>
+                    )}
                     <button
                       className="publish-button"
                       type="button"
@@ -2747,6 +2793,12 @@ function TaskWorkspace({
                   <button className="secondary-inline" type="button" onClick={importCloudVideos} disabled={cloudBusy || !api}>
                     公网 URL 导入
                   </button>
+                  {cloudUploadPauseState !== "idle" && (
+                    <button className="secondary-inline cloud-upload-pause" type="button" onClick={() => void toggleCloudUploadPause()}>
+                      {cloudUploadPauseState === "running" ? <Pause size={16} /> : <Play size={16} />}
+                      {cloudUploadPauseState === "running" ? "暂停上传" : "继续上传"}
+                    </button>
+                  )}
                   <button className="publish-button" type="button" onClick={() => void publishVideos(false)} disabled={cloudBusy || !api}>
                     发布
                   </button>

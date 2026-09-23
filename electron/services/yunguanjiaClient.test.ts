@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createYunguanjiaSign, YunguanjiaClient } from "./yunguanjiaClient.js";
+import { CloudUploadPauseGate } from "./cloudUploadPauseGate.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -184,6 +185,55 @@ describe("YunguanjiaClient", () => {
     expect(result.uploaded).toEqual([{ localPath: "/tmp/output.mp4", videoName: "output", url: "https://cdn.example.com/output.mp4" }]);
     expect(result.importJob).toBeUndefined();
     expect(result.submissionError).toBe("云管家导入请求超时");
+  });
+
+  it("pauses before the next video and continues without uploading the completed video twice", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "yunguanjia-test-"));
+    const client = new YunguanjiaClient(() => dir);
+    await client.saveSettings({
+      baseUrl: "https://api.example.com/",
+      companyKey: "company",
+      companySecret: "secret",
+      accountKey: "account-key",
+      uploadToken: "web-upload-token"
+    });
+    const internalClient = client as unknown as {
+      uploadLocalFileByWebApi: (_settings: unknown, localPath: string) => Promise<string>;
+    };
+    const upload = vi.spyOn(internalClient, "uploadLocalFileByWebApi").mockImplementation(async (_settings, localPath) =>
+      `https://cdn.example.com/${path.basename(localPath)}`
+    );
+    const submit = vi.spyOn(client, "importVideos").mockResolvedValue({ requestId: "request-paused", errorList: [] });
+    const gate = new CloudUploadPauseGate();
+    const savedPaths: string[] = [];
+    const phases: string[] = [];
+
+    const resultPromise = client.uploadLocalVideos([
+      { localPath: "/tmp/first.mp4", videoName: "first", videoType: 0, twoLevelTypeId: 1, labelIds: "2", videoRight: 0 },
+      { localPath: "/tmp/second.mp4", videoName: "second", videoType: 0, twoLevelTypeId: 1, labelIds: "2", videoRight: 0 }
+    ], (event) => phases.push(event.phase), {
+      isPauseRequested: () => gate.isPauseRequested(),
+      waitUntilResumed: () => gate.waitUntilResumed(),
+      onUploaded: async (video) => {
+        savedPaths.push(video.localPath);
+        if (video.videoName === "first") gate.requestPause();
+      }
+    });
+
+    await vi.waitFor(() => expect(gate.getState()).toBe("paused"));
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(savedPaths).toEqual(["/tmp/first.mp4"]);
+    expect(submit).not.toHaveBeenCalled();
+    expect(phases).toContain("paused");
+
+    gate.resume();
+    const result = await resultPromise;
+
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(savedPaths).toEqual(["/tmp/first.mp4", "/tmp/second.mp4"]);
+    expect(result.uploaded.map((item) => item.videoName)).toEqual(["first", "second"]);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(phases).toContain("resumed");
   });
 
   it("keeps the captured web api host internally without exposing it to the renderer", async () => {

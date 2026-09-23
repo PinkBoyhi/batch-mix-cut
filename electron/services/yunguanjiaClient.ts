@@ -49,10 +49,18 @@ export interface CloudUploadProgressEvent {
   index: number;
   total: number;
   videoName: string;
-  phase: "preparing" | "uploading" | "uploaded" | "failed" | "submitting";
+  phase: "preparing" | "uploading" | "uploaded" | "failed" | "paused" | "resumed" | "submitting";
   bytesUploaded?: number;
   bytesTotal?: number;
+  localPath?: string;
+  uploadedUrl?: string;
   message?: string;
+}
+
+export interface CloudUploadExecutionControl {
+  isPauseRequested: () => boolean;
+  waitUntilResumed: () => Promise<void>;
+  onUploaded?: (video: CloudLocalUploadVideo, uploaded: CloudLocalUploadJob["uploaded"][number]) => Promise<void>;
 }
 
 interface CloudResponse<T> {
@@ -212,7 +220,8 @@ export class YunguanjiaClient {
 
   async uploadLocalVideos(
     videos: CloudLocalUploadVideo[],
-    onProgress?: (event: CloudUploadProgressEvent) => void
+    onProgress?: (event: CloudUploadProgressEvent) => void,
+    control?: CloudUploadExecutionControl
   ): Promise<CloudLocalUploadJob> {
     if (videos.length === 0) {
       throw new Error("没有待上传的本地成片");
@@ -229,6 +238,7 @@ export class YunguanjiaClient {
     const uploaded: CloudLocalUploadJob["uploaded"] = [];
     const skipped: NonNullable<CloudLocalUploadJob["skipped"]> = [];
     for (const [index, video] of videos.entries()) {
+      await waitForCloudUploadResume(control, onProgress, index, videos.length, video);
       onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "preparing" });
       const validationError = validateLocalUploadVideo(video, index);
       if (validationError) {
@@ -242,8 +252,17 @@ export class YunguanjiaClient {
         const url = await retryLocalUpload(() => this.uploadLocalFileByWebApi(settings, uploadPath, (bytesUploaded, bytesTotal) => {
           onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "uploading", bytesUploaded, bytesTotal });
         }));
-        uploaded.push({ localPath: video.localPath, videoName: video.videoName, url });
-        onProgress?.({ index, total: videos.length, videoName: video.videoName, phase: "uploaded" });
+        const uploadedItem = { localPath: video.localPath, videoName: video.videoName, url };
+        uploaded.push(uploadedItem);
+        await control?.onUploaded?.(video, uploadedItem);
+        onProgress?.({
+          index,
+          total: videos.length,
+          videoName: video.videoName,
+          phase: "uploaded",
+          localPath: video.localPath,
+          uploadedUrl: url
+        });
       } catch (error) {
         const reason = toErrorMessage(error);
         skipped.push({ localPath: video.localPath, videoName: video.videoName, reason });
@@ -263,6 +282,10 @@ export class YunguanjiaClient {
       };
     }
 
+    await waitForCloudUploadResume(control, onProgress, videos.length, videos.length, {
+      ...videos[videos.length - 1],
+      videoName: ""
+    });
     onProgress?.({ index: videos.length, total: videos.length, videoName: "", phase: "submitting" });
     const uploadedUrls = new Map(uploaded.map((item) => [item.localPath, item.url]));
     const importPayload = videos
@@ -756,6 +779,25 @@ function validateLocalUploadVideo(video: CloudLocalUploadVideo, index: number): 
   if (!Number.isFinite(video.twoLevelTypeId) || video.twoLevelTypeId <= 0) return `第 ${index + 1} 个视频缺少二级分类 ID`;
   if (!video.labelIds.trim()) return `第 ${index + 1} 个视频缺少标签 ID`;
   return undefined;
+}
+
+async function waitForCloudUploadResume(
+  control: CloudUploadExecutionControl | undefined,
+  onProgress: ((event: CloudUploadProgressEvent) => void) | undefined,
+  index: number,
+  total: number,
+  video: CloudLocalUploadVideo
+): Promise<void> {
+  if (!control?.isPauseRequested()) return;
+  onProgress?.({
+    index,
+    total,
+    videoName: video.videoName,
+    phase: "paused",
+    message: index >= total ? "上传已暂停，尚未提交云管家处理" : `上传已暂停，下一条为 ${video.videoName}`
+  });
+  await control.waitUntilResumed();
+  onProgress?.({ index, total, videoName: video.videoName, phase: "resumed", message: "上传已继续" });
 }
 
 async function retryLocalUpload<T>(operation: () => Promise<T>): Promise<T> {

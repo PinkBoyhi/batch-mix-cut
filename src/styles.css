@@ -1273,6 +1273,21 @@ button:disabled {
   font-weight: 700;
 }
 
+.secondary-inline.cloud-upload-pause {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: #8a5a00;
+  background: #fff8e6;
+  border-color: #f0c36a;
+}
+
+.secondary-inline.cloud-upload-pause:not(:disabled):hover {
+  color: #704900;
+  background: #ffefbf;
+  border-color: #dfa92f;
+}
+
 .publish-feedback {
   flex-basis: 100%;
   margin: 0;

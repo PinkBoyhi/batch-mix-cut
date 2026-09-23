@@ -72,6 +72,8 @@ const api: AppApi = {
     ipcRenderer.invoke("cloud:import-videos", taskId, outputDir, videos),
   uploadCloudLocalVideos: (taskId: string, outputDir: string, videos: CloudLocalUploadVideo[]) =>
     ipcRenderer.invoke("cloud:upload-local-videos", taskId, outputDir, videos),
+  pauseCloudUpload: (taskId: string) => ipcRenderer.invoke("cloud:pause-upload", taskId),
+  resumeCloudUpload: (taskId: string) => ipcRenderer.invoke("cloud:resume-upload", taskId),
   queryCloudImportResult: (requestId: string, pageNo?: number, pageSize?: number) =>
     ipcRenderer.invoke("cloud:query-import-result", requestId, pageNo, pageSize),
   onJobUpdate: (callback: (update: TaskJobUpdate) => void) => {

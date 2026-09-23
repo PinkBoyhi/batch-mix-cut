@@ -392,6 +392,8 @@ export interface CloudLocalUploadJob {
   submissionError?: string;
 }
 
+export type CloudUploadPauseState = "idle" | "running" | "pause_requested" | "paused";
+
 export interface CloudUploadLedgerEntry {
   localPath: string;
   url?: string;
@@ -402,13 +404,15 @@ export interface CloudUploadLedgerEntry {
 
 export interface CloudUploadProgress {
   taskId: string;
-  stage: "uploading" | "processing" | "completed" | "failed" | "attention";
+  stage: "uploading" | "paused" | "processing" | "completed" | "failed" | "attention";
   current: number;
   total: number;
   message: string;
   bytesUploaded?: number;
   bytesTotal?: number;
   requestId?: string;
+  localPath?: string;
+  uploadedUrl?: string;
   videos?: WorkflowVideoResult[];
 }
 
@@ -508,6 +512,8 @@ export interface AppApi {
   getCloudUploadLedger: (outputDir: string, localPaths: string[]) => Promise<CloudUploadLedgerEntry[]>;
   importCloudVideos: (taskId: string, outputDir: string, videos: CloudImportVideo[]) => Promise<CloudImportJob>;
   uploadCloudLocalVideos: (taskId: string, outputDir: string, videos: CloudLocalUploadVideo[]) => Promise<CloudLocalUploadJob>;
+  pauseCloudUpload: (taskId: string) => Promise<CloudUploadPauseState>;
+  resumeCloudUpload: (taskId: string) => Promise<CloudUploadPauseState>;
   queryCloudImportResult: (
     requestId: string,
     pageNo?: number,

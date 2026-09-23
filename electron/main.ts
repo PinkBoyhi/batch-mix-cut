@@ -20,6 +20,7 @@ import { probeAsset } from "./services/mediaProbe.js";
 import { YunguanjiaClient } from "./services/yunguanjiaClient.js";
 import { CloudPublishProfileStore } from "./services/cloudPublishProfiles.js";
 import { CloudUploadLedgerStore } from "./services/cloudUploadLedger.js";
+import { CloudUploadPauseGate } from "./services/cloudUploadPauseGate.js";
 import { RemoteMixClient } from "./services/remoteMixClient.js";
 import { WorkflowMonitorClient } from "./services/workflowMonitorClient.js";
 import { monitorCloudImport } from "./services/cloudImportMonitor.js";
@@ -69,6 +70,7 @@ interface TaskRuntime {
 }
 
 const taskRuntimes = new Map<string, TaskRuntime>();
+const cloudUploadPauseGates = new Map<string, CloudUploadPauseGate>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -131,6 +133,12 @@ function createWindow(): BrowserWindow {
     for (const runtimeKey of taskRuntimes.keys()) {
       if (runtimeKey.startsWith(runtimePrefix)) {
         taskRuntimes.delete(runtimeKey);
+      }
+    }
+    for (const [runtimeKey, gate] of cloudUploadPauseGates) {
+      if (runtimeKey.startsWith(runtimePrefix)) {
+        gate.resume();
+        cloudUploadPauseGates.delete(runtimeKey);
       }
     }
     if (mainWindow === window) {
@@ -388,6 +396,9 @@ function registerIpc(): void {
     const runtimeKey = getRuntimeKey(event.sender, taskId);
     const runtime = taskRuntimes.get(runtimeKey);
     if (!runtime) return;
+    if (cloudUploadPauseGates.has(runtimeKey)) {
+      throw new Error("云管家上传仍在进行，请等待上传完成后再关闭任务标签");
+    }
     if (isActiveMixSnapshot(runtime.jobManager.getSnapshot()) || isActiveMixSnapshot(runtime.remoteMixClient.getSnapshot())) {
       throw new Error("任务仍在运行，不能关闭任务标签");
     }
@@ -466,13 +477,19 @@ function registerIpc(): void {
   });
   ipcMain.handle("cloud:upload-local-videos", async (event, taskId: string, outputDir: string, videos: CloudLocalUploadVideo[]) => {
     const runtime = getTaskRuntime(event, taskId);
+    const runtimeKey = getRuntimeKey(event.sender, taskId);
+    if (cloudUploadPauseGates.has(runtimeKey)) {
+      throw new Error("当前任务已有云管家上传正在进行");
+    }
+    const pauseGate = new CloudUploadPauseGate();
+    cloudUploadPauseGates.set(runtimeKey, pauseGate);
     const videoNames = videos.map((video) => video.videoName);
-    await ensureCloudWorkflow(runtime, taskId, videoNames);
     const videoStates: WorkflowVideoResult[] = videoNames.map((videoName) => ({ videoName, status: "pending" }));
     try {
+      await ensureCloudWorkflow(runtime, taskId, videoNames);
       const result = await cloudClient.uploadLocalVideos(videos, (progress) => {
         const currentVideo = videoStates[progress.index];
-        if (currentVideo) {
+        if (currentVideo && progress.phase !== "paused" && progress.phase !== "resumed") {
           currentVideo.status = progress.phase === "uploaded"
             ? "processing"
             : progress.phase === "failed"
@@ -491,14 +508,16 @@ function registerIpc(): void {
         const completed = ["uploaded", "failed"].includes(progress.phase) ? progress.index + 1 : progress.index;
         const update: CloudUploadProgress = {
           taskId,
-          stage: progress.phase === "submitting" ? "processing" : "uploading",
+          stage: progress.phase === "submitting" ? "processing" : progress.phase === "paused" ? "paused" : "uploading",
           current: completed,
           total: progress.total,
-          message: progress.phase === "submitting"
+          message: progress.message ?? (progress.phase === "submitting"
             ? "成片上传完成，正在提交云管家处理"
-            : `正在上传 ${progress.index + 1}/${progress.total}：${progress.videoName}`,
+            : `正在上传 ${Math.min(progress.index + 1, progress.total)}/${progress.total}：${progress.videoName}`),
           bytesUploaded: progress.bytesUploaded,
           bytesTotal: progress.bytesTotal,
+          localPath: progress.localPath,
+          uploadedUrl: progress.uploadedUrl,
           videos: structuredClone(videoStates)
         };
         if (!event.sender.isDestroyed()) event.sender.send("cloud:progress", update);
@@ -511,6 +530,12 @@ function registerIpc(): void {
             : { current: completed, total: progress.total, unit: "videos", message: update.message },
           videos: structuredClone(videoStates)
         }, progress.phase === "uploading");
+      }, {
+        isPauseRequested: () => pauseGate.isPauseRequested(),
+        waitUntilResumed: () => pauseGate.waitUntilResumed(),
+        onUploaded: async (video, uploaded) => {
+          await cloudUploadLedgerStore.recordLocalUpload(outputDir, [video], { uploaded: [uploaded] }).catch(() => undefined);
+        }
       });
       await cloudUploadLedgerStore.recordLocalUpload(outputDir, videos, result).catch(() => undefined);
       if (result.importJob) {
@@ -532,7 +557,20 @@ function registerIpc(): void {
     } catch (error) {
       await reportCloudFailure(event.sender, taskId, runtime, error, videoStates);
       throw error;
+    } finally {
+      if (cloudUploadPauseGates.get(runtimeKey) === pauseGate) {
+        cloudUploadPauseGates.delete(runtimeKey);
+      }
+      pauseGate.resume();
     }
+  });
+  ipcMain.handle("cloud:pause-upload", (event, taskId: string) => {
+    const gate = cloudUploadPauseGates.get(getRuntimeKey(event.sender, taskId));
+    return gate?.requestPause() ?? "idle";
+  });
+  ipcMain.handle("cloud:resume-upload", (event, taskId: string) => {
+    const gate = cloudUploadPauseGates.get(getRuntimeKey(event.sender, taskId));
+    return gate?.resume() ?? "idle";
   });
   ipcMain.handle("cloud:query-import-result", async (_event, requestId: string, pageNo = 1, pageSize = 20) => {
     return cloudClient.queryImportResult(requestId, pageNo, pageSize);
