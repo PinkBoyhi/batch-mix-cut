@@ -27,6 +27,7 @@ const api = {
   revealPath: (targetPath) => ipcRenderer.invoke("shell:reveal-path", targetPath),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  downloadAndInstallUpdate: (taskId) => ipcRenderer.invoke("update:download-and-install", taskId),
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
   getUpdateReleaseNotes: () => ipcRenderer.invoke("update:get-release-notes"),
   onUpdateStatus: (callback) => {
@@ -55,6 +56,8 @@ const api = {
   getCloudUploadLedger: (outputDir, localPaths) => ipcRenderer.invoke("cloud:get-upload-ledger", outputDir, localPaths),
   importCloudVideos: (taskId, outputDir, videos) => ipcRenderer.invoke("cloud:import-videos", taskId, outputDir, videos),
   uploadCloudLocalVideos: (taskId, outputDir, videos) => ipcRenderer.invoke("cloud:upload-local-videos", taskId, outputDir, videos),
+  pauseCloudUpload: (taskId) => ipcRenderer.invoke("cloud:pause-upload", taskId),
+  resumeCloudUpload: (taskId) => ipcRenderer.invoke("cloud:resume-upload", taskId),
   queryCloudImportResult: (requestId, pageNo, pageSize) =>
     ipcRenderer.invoke("cloud:query-import-result", requestId, pageNo, pageSize),
   onJobUpdate: (callback) => {

@@ -81,6 +81,11 @@ export class RemoteMixClient extends EventEmitter {
     };
   }
 
+  async getUpdateSource(): Promise<RemoteMixSettings> {
+    const settings = await this.readSettings();
+    return { serverUrl: settings.serverUrl, token: settings.token };
+  }
+
   async saveSettings(settings: RemoteMixSettings): Promise<RemoteMixSettingsView> {
     const current = await this.readSettings();
     const next: StoredRemoteSettings = {

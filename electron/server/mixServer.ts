@@ -13,6 +13,7 @@ import { DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_JS } from "./dashboardPage.js"
 import { FeishuNotifier } from "./feishuNotifier.js";
 import { ServerJobStore, type PersistedServerJob } from "./serverJobStore.js";
 import { WorkflowStore } from "./workflowStore.js";
+import { WindowsUpdateCache } from "./windowsUpdateCache.js";
 import type {
   BatchJobSnapshot,
   CloudLocalUploadJob,
@@ -56,6 +57,10 @@ const jobRecoveryVersion = 1;
 const jobs = new Map<string, ServerJob>();
 const workflowStore = new WorkflowStore(workspaceRoot);
 const jobStore = new ServerJobStore(workspaceRoot);
+const windowsUpdateCache = new WindowsUpdateCache(
+  path.join(workspaceRoot, "updates", "windows"),
+  process.env.MIX_SERVER_UPDATE_SOURCE_URL
+);
 const feishuNotifier = new FeishuNotifier({
   webhook: process.env.FEISHU_BOT_WEBHOOK,
   secret: process.env.FEISHU_BOT_SECRET,
@@ -96,6 +101,15 @@ async function main(): Promise<void> {
     void cleanupExpiredServerProjects();
   }, projectCleanupIntervalMs);
   cleanupTimer.unref();
+  const updateWarmup = () => {
+    void windowsUpdateCache.warm()
+      .then((filePath) => console.log(`Windows 更新缓存已就绪：${path.basename(filePath)}`))
+      .catch((error) => console.warn(`Windows 更新缓存暂未就绪：${error instanceof Error ? error.message : String(error)}`));
+  };
+  const initialUpdateWarmupTimer = setTimeout(updateWarmup, 30_000);
+  initialUpdateWarmupTimer.unref();
+  const updateWarmupTimer = setInterval(updateWarmup, 10 * 60 * 1000);
+  updateWarmupTimer.unref();
 
   const server = http.createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
@@ -175,6 +189,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       projectRetentionHours,
       storage
     });
+    return;
+  }
+
+  const windowsUpdateMatch = url.pathname.match(/^\/api\/updates\/windows\/([^/]+)$/);
+  if (windowsUpdateMatch && (request.method === "GET" || request.method === "HEAD")) {
+    const requestedName = decodeURIComponent(windowsUpdateMatch[1]);
+    const filePath = await windowsUpdateCache.resolve(requestedName);
+    await sendStaticFile(request, response, filePath);
     return;
   }
 
@@ -1128,6 +1150,45 @@ async function sendFile(response: ServerResponse, filePath: string): Promise<voi
       reject(error);
     });
   });
+}
+
+async function sendStaticFile(request: IncomingMessage, response: ServerResponse, filePath: string): Promise<void> {
+  const stat = await fs.stat(filePath);
+  const range = parseByteRange(request.headers.range, stat.size);
+  const start = range?.start ?? 0;
+  const end = range?.end ?? stat.size - 1;
+  const contentLength = Math.max(0, end - start + 1);
+  const extension = path.extname(filePath).toLowerCase();
+  response.writeHead(range ? 206 : 200, {
+    "content-type": extension === ".yml" ? "text/yaml; charset=utf-8" : "application/octet-stream",
+    "content-length": contentLength,
+    "accept-ranges": "bytes",
+    "cache-control": extension === ".yml" ? "no-store" : "private, max-age=3600",
+    ...(range ? { "content-range": `bytes ${start}-${end}/${stat.size}` } : {})
+  });
+  if (request.method === "HEAD") {
+    response.end();
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath, { start, end });
+    stream.pipe(response);
+    stream.on("end", resolve);
+    stream.on("error", (error) => {
+      response.destroy(error);
+      reject(error);
+    });
+  });
+}
+
+function parseByteRange(header: string | undefined, totalSize: number): { start: number; end: number } | undefined {
+  if (!header) return undefined;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return undefined;
+  const start = match[1] ? Number(match[1]) : 0;
+  const end = match[2] ? Number(match[2]) : totalSize - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= totalSize) return undefined;
+  return { start, end: Math.min(end, totalSize - 1) };
 }
 
 export interface CloudUploadPlan {

@@ -12,6 +12,9 @@ export type UpdateStatus =
   | "idle"
   | "checking"
   | "available"
+  | "downloading"
+  | "downloaded"
+  | "installing"
   | "not-available"
   | "error";
 
@@ -235,6 +238,8 @@ export interface UpdateSnapshot {
   progressPercent?: number;
   error?: string;
   url?: string;
+  canAutoUpdate?: boolean;
+  downloadSource?: "intranet" | "github";
 }
 
 export interface UpdateReleaseNotes {
@@ -488,6 +493,7 @@ export interface AppApi {
   revealPath: (targetPath: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   checkForUpdates: () => Promise<UpdateSnapshot>;
+  downloadAndInstallUpdate: (taskId: string) => Promise<UpdateSnapshot>;
   getUpdateStatus: () => Promise<UpdateSnapshot>;
   getUpdateReleaseNotes: () => Promise<UpdateReleaseNotes>;
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) => () => void;

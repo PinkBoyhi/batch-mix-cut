@@ -41,6 +41,7 @@ const api: AppApi = {
   revealPath: (targetPath: string) => ipcRenderer.invoke("shell:reveal-path", targetPath),
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  downloadAndInstallUpdate: (taskId: string) => ipcRenderer.invoke("update:download-and-install", taskId),
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
   getUpdateReleaseNotes: () => ipcRenderer.invoke("update:get-release-notes"),
   onUpdateStatus: (callback) => {

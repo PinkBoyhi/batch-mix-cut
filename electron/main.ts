@@ -10,6 +10,7 @@ import {
   type OpenDialogOptions,
   type WebContents
 } from "electron";
+import electronUpdater from "electron-updater";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -45,10 +46,15 @@ import type {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const { autoUpdater } = electronUpdater;
 const cloudClient = new YunguanjiaClient(() => app.getPath("userData"));
 const cloudPublishProfileStore = new CloudPublishProfileStore(() => app.getPath("userData"));
 const cloudUploadLedgerStore = new CloudUploadLedgerStore();
-const updateManager = new UpdateManager(app.getVersion());
+const updateManager = new UpdateManager(app.getVersion(), {
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  updater: autoUpdater
+});
 const DEFAULT_CLOUD_LOGIN_URL = "https://sucaiwang.zhishangsoft.com/#/classification";
 const DEFAULT_CLOUD_UPLOAD_BASE_URL = "https://sucaiwang-api-elb.zhishangsoft.com";
 const PREVIEW_PROTOCOL = "batchmix-preview";
@@ -417,6 +423,13 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("update:check", async () => updateManager.check());
+  ipcMain.handle("update:download-and-install", async (event, taskId: string) => {
+    if (hasActiveDesktopWork()) {
+      throw new Error("还有混剪、传输或云管家上传任务在进行，请等待完成或停止后再更新");
+    }
+    const source = await getTaskRuntime(event, taskId).remoteMixClient.getUpdateSource();
+    return updateManager.downloadAndInstall(source);
+  });
   ipcMain.handle("update:get-status", async () => updateManager.getSnapshot());
   ipcMain.handle("update:get-release-notes", async () => updateManager.getReleaseNotes());
 
@@ -579,6 +592,14 @@ function registerIpc(): void {
 
 function isActiveMixSnapshot(snapshot: BatchJobSnapshot): boolean {
   return ["queued", "running", "paused", "stopping"].includes(snapshot.status);
+}
+
+function hasActiveDesktopWork(): boolean {
+  if (cloudUploadPauseGates.size > 0) return true;
+  for (const runtime of taskRuntimes.values()) {
+    if (isActiveMixSnapshot(runtime.jobManager.getSnapshot()) || isActiveMixSnapshot(runtime.remoteMixClient.getSnapshot())) return true;
+  }
+  return false;
 }
 
 async function ensureCloudWorkflow(runtime: TaskRuntime, taskId: string, videoNames: string[]): Promise<void> {

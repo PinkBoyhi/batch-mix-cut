@@ -567,7 +567,7 @@ function TaskWorkspace({
     if (config.slots.length === 0) return "还没有段落";
     return config.slots.map((slot) => `${slot.name}:${slot.assets.length}`).join("  ");
   }, [config]);
-  const updateMessage = updateSnapshot.status === "error" || updateSnapshot.error ? "版本号获取失败" : updateSnapshot.message;
+  const updateMessage = updateSnapshot.error ? `${updateSnapshot.message}：${updateSnapshot.error}` : updateSnapshot.message;
   const selectedCloudAccount = cloudSettings.accountKey
     ? `${cloudSettings.accountName || cloudSettings.accountLogin || "已登录用户"} · ${cloudSettings.accountLogin || cloudSettings.accountKey}`
     : "未登录云管家";
@@ -944,7 +944,15 @@ function TaskWorkspace({
   async function checkForUpdates() {
     if (!api) return;
     try {
-      setUpdateSnapshot(await api.checkForUpdates());
+      const snapshot = await api.checkForUpdates();
+      setUpdateSnapshot(snapshot);
+      if (
+        snapshot.status === "available" &&
+        snapshot.canAutoUpdate &&
+        window.confirm(`发现新版本 ${snapshot.availableVersion}。\n\n是否现在下载？下载完成后程序会自动重启并覆盖安装。`)
+      ) {
+        await startAutomaticUpdate(false);
+      }
     } catch (err) {
       setUpdateSnapshot((current) => ({
         ...current,
@@ -952,6 +960,16 @@ function TaskWorkspace({
         message: "更新检查失败",
         error: toMessage(err)
       }));
+    }
+  }
+
+  async function startAutomaticUpdate(askFirst = true) {
+    if (!api) return;
+    if (askFirst && !window.confirm("更新完成后程序会自动重启。是否继续？")) return;
+    try {
+      setUpdateSnapshot(await api.downloadAndInstallUpdate(taskId));
+    } catch (err) {
+      setUpdateSnapshot((current) => ({ ...current, status: "error", message: "自动更新失败", error: toMessage(err) }));
     }
   }
 
@@ -1914,10 +1932,16 @@ function TaskWorkspace({
               className="secondary-inline"
               type="button"
               onClick={checkForUpdates}
-              disabled={!api || updateSnapshot.status === "checking"}
+              disabled={!api || ["checking", "downloading", "downloaded", "installing"].includes(updateSnapshot.status)}
             >
               检查更新
             </button>
+            {updateSnapshot.status === "available" && updateSnapshot.canAutoUpdate && (
+              <button className="inline-command" type="button" onClick={() => void startAutomaticUpdate()} disabled={hasActiveTask || cloudBusy}>
+                <Download size={16} />
+                下载并安装
+              </button>
+            )}
             <button
               className="inline-command"
               type="button"
@@ -1930,6 +1954,7 @@ function TaskWorkspace({
               <FileText size={15} />
               更新日志
             </button>
+            {updateSnapshot.downloadSource === "intranet" && <span className="update-source">下载源：公司内网</span>}
           </div>
         </section>
       </aside>

@@ -1419,6 +1419,13 @@ button:disabled {
   margin-top: 14px;
 }
 
+.update-source {
+  width: 100%;
+  color: #3f6f4c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

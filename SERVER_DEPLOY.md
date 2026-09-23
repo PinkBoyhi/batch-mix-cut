@@ -2,6 +2,8 @@
 
 服务器节点用于把混剪计算放到 Linux 服务器上执行。素材需要先放到服务器工作目录，或通过 ZIP 上传接口传到服务器。
 
+0.1.67 起，服务器会在 `updates/windows/` 自动缓存 GitHub 最新 Windows 安装包，并通过 `/api/updates/windows/` 向已配置服务器 Token 的桌面端提供内网下载。服务器会每 10 分钟检查并预热缓存；可用 `MIX_SERVER_UPDATE_SOURCE_URL` 指定其他上游更新源。
+
 ## 启动
 
 ```bash

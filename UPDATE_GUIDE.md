@@ -8,7 +8,7 @@
 https://github.com/PinkBoyhi/batch-mix-cut/releases/latest
 ```
 
-用户需要在 GitHub 发布页手动下载对应平台安装包，然后自行安装覆盖。
+0.1.67 起，Windows 用户可在“检查更新”后直接确认下载，程序会优先使用公司内网缓存，下载完成后自动重启并覆盖安装。macOS 以及首次安装 0.1.67 仍需从 GitHub 发布页手动下载。
 
 ## 发布新版本
 
