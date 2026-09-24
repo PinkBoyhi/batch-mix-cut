@@ -46,6 +46,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     const first = videoAssets[0];
     if (!first) throw new Error("没有可导出的视频素材");
     const { width, height } = resolveCanvasSize(config, first);
+    const outputFrameRate = resolveOutputFrameRate(config.videoProfile.frameRate);
     const segmentDurations = videoAssets.map(resolveSegmentDuration);
     const totalDuration = segmentDurations.reduce((sum, duration) => sum + duration, 0);
     const preserveLegacyLoudness = shouldPreserveLegacyLoudness(config);
@@ -86,7 +87,7 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
 
     const videoFilters = videoAssets.map((_, index) => {
       const duration = segmentDurations[index].toFixed(6);
-      return `[${index}:v]trim=start=0:duration=${duration},setpts=PTS-STARTPTS,fps=30,settb=AVTB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v${index}]`;
+      return `[${index}:v]trim=start=0:duration=${duration},setpts=PTS-STARTPTS,fps=${outputFrameRate},settb=AVTB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v${index}]`;
     });
     const audioFilters = videoAssets.map((asset, index) => {
       const duration = segmentDurations[index].toFixed(6);
@@ -166,6 +167,8 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       ...(ffmpegThreadLimit ? ["-threads", String(ffmpegThreadLimit)] : []),
       "-crf",
       String(config.videoProfile.crf),
+      "-r",
+      String(outputFrameRate),
       "-c:a",
       "aac",
       "-movflags",
@@ -223,6 +226,10 @@ function readPositiveInteger(value: string | undefined): number | undefined {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) return undefined;
   return Math.floor(parsed);
+}
+
+export function resolveOutputFrameRate(frameRate: unknown): 30 | 60 {
+  return frameRate === 60 ? 60 : 30;
 }
 
 async function ensureLocalAsset(asset: AssetInfo, outputDir: string, signal: AbortSignal): Promise<AssetInfo> {

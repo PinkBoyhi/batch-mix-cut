@@ -7,7 +7,7 @@ const bundle=fs.readdirSync(root+'/dist/assets').find(x=>x.endsWith('.js'));
 const bootstrap=`
 window.audit={ledgerCalls:0,ledgerResolved:0,jobListener:null};
 const a={id:'a',name:'a.mp4',path:'/audit/a.mp4',kind:'video',durationSeconds:1};
-const cfg={projectDir:'/audit',outputDir:'/audit',slots:[{name:'A',assets:[a],sortOrder:0}],bgmAssets:[],bgmRange:{fadeInSeconds:0,fadeOutSeconds:0},bgmTracks:[],maxCombinations:1,outputNamePattern:'成品',exportMode:'video',sourceVolume:1,bgmVolume:1,videoProfile:{codec:'h264',audioCodec:'aac',preset:'veryfast',crf:20,canvasMode:'original'},exportTarget:'cloud',draftSlots:[]};
+const cfg={projectDir:'/audit',outputDir:'/audit',slots:[{name:'A',assets:[a],sortOrder:0}],bgmAssets:[],bgmRange:{fadeInSeconds:0,fadeOutSeconds:0},bgmTracks:[],maxCombinations:1,outputNamePattern:'成品',exportMode:'video',sourceVolume:1,bgmVolume:1,videoProfile:{codec:'h264',audioCodec:'aac',preset:'veryfast',crf:20,canvasMode:'original',frameRate:30},exportTarget:'cloud',draftSlots:[]};
 const combo={id:'mix_0001',index:0,slotAssets:{A:a},targetVideoPath:'/audit/videos/成品_001.mp4',targetDraftPath:'/audit/drafts/1'};
 window.batchMix={
 selectDirectory:async()=>'/audit',createManualProject:async()=>({config:cfg,combinations:[combo],warnings:[]}),
@@ -20,7 +20,7 @@ getCloudSettings:async()=>({baseUrl:'',hasApiToken:false,accountKey:'test',accou
 logoutCloudAccount:async()=>({baseUrl:'',hasApiToken:false,accountKey:'',accountName:'',hasUploadToken:false}),
 getCloudPublishProfiles:async()=>[],
 getCloudUploadLedger:async()=>{window.audit.ledgerCalls++;await new Promise(r=>setTimeout(r,100));window.audit.ledgerResolved++;return [{localPath:'/audit/videos/成品_001.mp4',url:'https://example.invalid/already-uploaded.mp4',submitted:true,requestId:'existing-request'}]},
-listCloudVideoTypes:async()=>[],listCloudVideoLabels:async()=>[],buildCombinations:async()=>[combo]
+listCloudVideoTypes:async()=>[],listCloudVideoLabels:async()=>[],buildCombinations:async(config)=>{window.audit.lastConfig=config;return [combo]}
 };`;
 app.whenReady().then(async()=>{
 const win=new BrowserWindow({show:false,webPreferences:{contextIsolation:false,nodeIntegration:false}});
@@ -39,6 +39,9 @@ await waitFor("window.audit.ledgerResolved === 1 && document.body.innerText.incl
 const result=await win.webContents.executeJavaScript(`(()=>{const rows=[...document.querySelectorAll('tbody tr')].map(x=>x.innerText);return {ledgerCalls:window.audit.ledgerCalls,ledgerResolved:window.audit.ledgerResolved,rows,hasCompletedMessage:document.body.innerText.includes('AUDIT_COMPLETE')}})()`);
 assert.equal(result.ledgerCalls,1);assert.equal(result.ledgerResolved,1);
 assert.ok(await win.webContents.executeJavaScript(`document.body.innerText.includes('退出当前账号')`), 'Cloud logout action was not rendered');
+assert.ok(await win.webContents.executeJavaScript(`document.body.innerText.includes('60 FPS（更流畅，导出更慢）')`), '60 FPS export option was not rendered');
+await win.webContents.executeJavaScript(`(()=>{const label=[...document.querySelectorAll('label.field')].find(x=>x.querySelector('span')?.innerText==='帧率');const select=label?.querySelector('select');if(!select)throw new Error('帧率选择框不存在');select.value='60';select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+await waitFor("window.audit.lastConfig?.videoProfile?.frameRate === 60");
 assert.ok(result.rows.some(row=>row.includes('已提交')), 'Upload ledger was not restored');
 assert.ok(!result.rows.some(row=>row.includes('待上传')), 'Already submitted video was reset');
 await win.webContents.executeJavaScript(`window.audit.jobListener({taskId:window.audit.taskId,executionTarget:'local',snapshot:{id:'running-job',status:'running',total:1,completed:0,failed:0,message:'running',failures:[]}})`);
@@ -48,6 +51,6 @@ assert.equal(locked.settings,4);assert.equal(locked.directory,true);
 await win.webContents.executeJavaScript(`window.audit.jobListener({taskId:window.audit.taskId,executionTarget:'local',snapshot:{id:'audit-job',startedAt:'2026-09-06T12:00:00Z',status:'completed',total:1,completed:1,failed:0,message:'retry',failures:[]}})`);
 await waitFor("window.audit.ledgerResolved === 2 && document.body.innerText.includes('已提交')");
 await waitFor("document.body.innerText.includes('请先选择云管家二级分类')");
-console.log('界面回归通过：异步上传记录恢复、已提交状态保留、运行中配置锁定、重试后恢复发布流程');
+console.log('界面回归通过：30/60 FPS 选择、异步上传记录恢复、已提交状态保留、运行中配置锁定、重试后恢复发布流程');
 }catch(e){console.error(e);process.exitCode=1;}finally{win.destroy();app.exit(process.exitCode || 0);}
 });

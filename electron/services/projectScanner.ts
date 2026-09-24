@@ -103,7 +103,8 @@ export async function scanProject(projectDir: string, templateDraftOverride?: st
       audioCodec: "aac",
       preset: "fast",
       crf: 20,
-      canvasMode: "original"
+      canvasMode: "original",
+      frameRate: 30
     },
     exportTarget: "local",
     templateDraftPath: hasTemplate ? templateDraftPath : undefined,

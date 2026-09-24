@@ -57,6 +57,12 @@ async function eventually(condition: () => boolean) {
 function useCloudAsset() { config.slots[0].assets[0].path = "https://example.invalid/source.mp4"; }
 
 describe("remote lifecycle recovery", () => {
+  it("rejects 60 FPS before upload when the server does not advertise frame-rate support", async () => {
+    config.videoProfile.frameRate = 60;
+    await expect(client.start(config)).rejects.toThrow("暂不支持 60 FPS");
+    expect(jobs).toBe(0);
+  });
+
   it("releases the running state after upload retries fail", async () => {
     mode = "upload-fail";
     await expect(client.start(config)).rejects.toThrow("上传素材");

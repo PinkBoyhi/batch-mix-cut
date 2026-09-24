@@ -53,6 +53,7 @@ const projectCleanupIntervalMs = 60 * 60 * 1000;
 const accessToken = process.env.MIX_SERVER_TOKEN || randomBytes(24).toString("hex");
 const audioPipelineVersion = 10;
 const combinationPipelineVersion = 4;
+const videoPipelineVersion = 1;
 const jobRecoveryVersion = 1;
 const jobs = new Map<string, ServerJob>();
 const workflowStore = new WorkflowStore(workspaceRoot);
@@ -180,6 +181,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       authRequired: true,
       audioPipelineVersion,
       combinationPipelineVersion,
+      videoPipelineVersion,
       jobRecoveryVersion,
       jobs: jobs.size,
       activeJobs: countActiveJobs(),
@@ -924,6 +926,10 @@ async function unzip(zipPath: string, targetDir: string): Promise<void> {
 async function validateMixConfig(config: MixProjectConfig): Promise<void> {
   validateConfigPaths(config);
   validateProjectIsolation(config, path.join(workspaceRoot, "projects"));
+  const requestedFrameRate = config.videoProfile.frameRate ?? 30;
+  if (requestedFrameRate !== 30 && requestedFrameRate !== 60) {
+    throw new Error("导出帧率只支持 30 FPS 或 60 FPS");
+  }
   if (config.slots.length === 0) {
     throw new Error("至少需要添加一个视频段落后才能开始服务器混剪");
   }

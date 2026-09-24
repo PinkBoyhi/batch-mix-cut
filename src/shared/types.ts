@@ -59,6 +59,7 @@ export interface VideoProfile {
   preset: "veryfast" | "fast" | "medium" | "slow";
   crf: number;
   canvasMode: "original" | "vertical_9_16" | "horizontal_16_9";
+  frameRate?: 30 | 60;
 }
 
 export interface BgmSegmentRange {

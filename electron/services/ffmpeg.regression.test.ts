@@ -6,8 +6,8 @@ import { promisify } from "node:util";
 import http from "node:http";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import type { AssetInfo, MixProjectConfig } from "../../src/shared/types.js";
-import { buildFinalAudioFilterChain, exportVideo } from "./ffmpeg.js";
-import { getFfmpegPath } from "./ffmpegBinaries.js";
+import { buildFinalAudioFilterChain, exportVideo, resolveOutputFrameRate } from "./ffmpeg.js";
+import { getFfmpegPath, getFfprobePath } from "./ffmpegBinaries.js";
 import { probeAsset } from "./mediaProbe.js";
 import { createCombinations } from "./combinator.js";
 
@@ -52,6 +52,27 @@ async function volume(filePath: string) {
 }
 
 describe("export integrity and user controls", () => {
+  it("defaults old projects to 30 FPS and exports a requested 60 FPS video", async () => {
+    expect(resolveOutputFrameRate(undefined)).toBe(30);
+    expect(resolveOutputFrameRate(30)).toBe(30);
+    expect(resolveOutputFrameRate(60)).toBe(60);
+    expect(resolveOutputFrameRate(120)).toBe(30);
+
+    const source = path.join(dir, "source.mp4");
+    await makeVideo(source);
+    const sixtyFpsConfig = config(asset(source), "sixty-fps");
+    sixtyFpsConfig.videoProfile.frameRate = 60;
+    const output = await exportConfig(sixtyFpsConfig);
+    const { stdout } = await exec(getFfprobePath(), [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=avg_frame_rate",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      output
+    ]);
+    expect(stdout.trim()).toBe("60/1");
+  }, 30000);
+
   it("re-probes a replaced source even if its path is unchanged", async () => {
     const source = path.join(dir, "same.mp4"); await makeVideo(source);
     await exportConfig(config(await probeAsset(asset(source)), "first"));

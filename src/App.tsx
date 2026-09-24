@@ -1769,6 +1769,24 @@ function TaskWorkspace({
             </label>
 
             <label className="field">
+              <span>帧率</span>
+              <select
+                value={config.videoProfile.frameRate ?? 30}
+                onChange={(event) =>
+                  updateConfig({
+                    videoProfile: {
+                      ...config.videoProfile,
+                      frameRate: Number(event.target.value) === 60 ? 60 : 30
+                    }
+                  })
+                }
+              >
+                <option value={30}>30 FPS（默认）</option>
+                <option value={60}>60 FPS（更流畅，导出更慢）</option>
+              </select>
+            </label>
+
+            <label className="field">
               <span>最大数</span>
               <input
                 type="number"

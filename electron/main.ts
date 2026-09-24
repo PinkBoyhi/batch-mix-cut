@@ -326,7 +326,8 @@ function registerIpc(): void {
         audioCodec: "aac",
         preset: "fast",
         crf: 20,
-        canvasMode: "original"
+        canvasMode: "original",
+        frameRate: 30
       },
       exportTarget: "local",
       draftSlots: []

@@ -23,6 +23,7 @@ const CONFIG_FILE = "remote-mix-server.json";
 const DEFAULT_SERVER_URL = "http://10.0.0.133:8787";
 const MIN_SERVER_AUDIO_PIPELINE_VERSION = 10;
 const MIN_SERVER_COMBINATION_PIPELINE_VERSION = 4;
+const MIN_SERVER_VIDEO_PIPELINE_VERSION = 1;
 const REQUEST_TIMEOUT_MS = 20_000;
 const TRANSFER_RETRY_ATTEMPTS = 3;
 const POLL_FAILURE_LIMIT = 8;
@@ -36,6 +37,7 @@ interface RemoteHealth {
   workspaceRoot: string;
   audioPipelineVersion?: number;
   combinationPipelineVersion?: number;
+  videoPipelineVersion?: number;
   storage?: {
     freeBytes?: number;
     minFreeBytes?: number;
@@ -158,6 +160,9 @@ export class RemoteMixClient extends EventEmitter {
       }
       if (!supportsAudioPipeline(health)) {
         throw new Error("服务器混剪引擎较旧，无法保证 BGM 原始响度、完整音轨和音画同步；请先更新服务器后再开始混剪。");
+      }
+      if ((config.videoProfile.frameRate ?? 30) === 60 && !supportsVideoPipeline(health)) {
+        throw new Error("服务器混剪引擎较旧，暂不支持 60 FPS；请先更新服务器，或改选 30 FPS。");
       }
       if (hasInsufficientStorage(health)) {
         throw new Error(describeInsufficientStorage(health));
@@ -647,6 +652,10 @@ function supportsAudioPipeline(health: RemoteHealth): boolean {
 
 function supportsCombinationPipeline(health: RemoteHealth): boolean {
   return (health.combinationPipelineVersion ?? 0) >= MIN_SERVER_COMBINATION_PIPELINE_VERSION;
+}
+
+function supportsVideoPipeline(health: RemoteHealth): boolean {
+  return (health.videoPipelineVersion ?? 0) >= MIN_SERVER_VIDEO_PIPELINE_VERSION;
 }
 
 function hasInsufficientStorage(health: RemoteHealth): boolean {
