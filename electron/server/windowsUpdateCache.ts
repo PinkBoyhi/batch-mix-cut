@@ -11,6 +11,7 @@ const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000;
 
 export class WindowsUpdateCache {
   private lastMetadataRefreshAt = 0;
+  private metadataRefresh?: Promise<string>;
   private readonly downloads = new Map<string, Promise<string>>();
 
   constructor(
@@ -20,7 +21,8 @@ export class WindowsUpdateCache {
   ) {}
 
   async warm(): Promise<string> {
-    const metadataPath = await this.resolve("latest.yml");
+    await fs.mkdir(this.cacheDir, { recursive: true });
+    const metadataPath = await this.refreshMetadata(true);
     const metadata = parseUpdateMetadata(await fs.readFile(metadataPath, "utf8"));
     return this.resolve(metadata.path);
   }
@@ -41,11 +43,24 @@ export class WindowsUpdateCache {
     return this.downloads.get(requestedName) ?? this.startDownload(requestedName, metadata.sha512, metadata.size);
   }
 
-  private async refreshMetadata(): Promise<string> {
+  private async refreshMetadata(force = false): Promise<string> {
     const target = path.join(this.cacheDir, "latest.yml");
-    if (Date.now() - this.lastMetadataRefreshAt < METADATA_REFRESH_MS && (await fs.stat(target).catch(() => undefined))?.isFile()) {
+    const hasCachedMetadata = (await fs.stat(target).catch(() => undefined))?.isFile() === true;
+    if (hasCachedMetadata && !force) {
+      if (Date.now() - this.lastMetadataRefreshAt >= METADATA_REFRESH_MS) {
+        void this.refreshMetadata(true).catch(() => undefined);
+      }
       return target;
     }
+    if (this.metadataRefresh) return this.metadataRefresh;
+    const refresh = this.downloadMetadata(target).finally(() => {
+      if (this.metadataRefresh === refresh) this.metadataRefresh = undefined;
+    });
+    this.metadataRefresh = refresh;
+    return refresh;
+  }
+
+  private async downloadMetadata(target: string): Promise<string> {
     try {
       const response = await this.fetchImpl(`${this.sourceBaseUrl.replace(/\/+$/, "")}/latest.yml`, {
         headers: { "User-Agent": "YiboBioMixCut-Update-Mirror" },
@@ -58,7 +73,10 @@ export class WindowsUpdateCache {
       this.lastMetadataRefreshAt = Date.now();
       return target;
     } catch (error) {
-      if ((await fs.stat(target).catch(() => undefined))?.isFile()) return target;
+      if ((await fs.stat(target).catch(() => undefined))?.isFile()) {
+        this.lastMetadataRefreshAt = Date.now();
+        return target;
+      }
       throw error;
     }
   }

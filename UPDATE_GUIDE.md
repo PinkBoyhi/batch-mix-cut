@@ -2,7 +2,7 @@
 
 ## 当前方案
 
-Windows 版可以在应用内检查、下载并安装更新；大体积安装包优先从公司内网混剪服务器下载，内网不可用时回退 GitHub。macOS 版仍打开 GitHub 发布页手动下载：
+Windows 版可以在应用内检查、下载并安装更新；版本检查和大体积安装包都优先使用公司内网混剪服务器，内网不可用时回退 GitHub。macOS 版仍打开 GitHub 发布页手动下载：
 
 ```text
 https://github.com/PinkBoyhi/batch-mix-cut/releases/latest
@@ -47,7 +47,7 @@ git push
 
 ## 重要限制
 
-- Windows 检查版本信息仍需访问 GitHub；大体积安装包可从内网服务器下载。
+- Windows 在混剪服务器可用时无需访问 GitHub；如果内网和 GitHub 都不可用，更新检查会明确显示两个来源的错误。
 - 每次发布必须增加版本号，否则软件会认为没有新版本。
 - Windows 和 Mac 要同步发布同一个版本号，避免反馈时版本混乱。
 - macOS 安装包当前没有 Apple 开发者签名，首次打开可能需要右键“打开”，或到“系统设置 > 隐私与安全性”里允许。

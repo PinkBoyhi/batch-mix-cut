@@ -944,7 +944,7 @@ function TaskWorkspace({
   async function checkForUpdates() {
     if (!api) return;
     try {
-      const snapshot = await api.checkForUpdates();
+      const snapshot = await api.checkForUpdates(taskId);
       setUpdateSnapshot(snapshot);
       if (
         snapshot.status === "available" &&

@@ -423,7 +423,10 @@ function registerIpc(): void {
     await shell.openExternal(url);
   });
 
-  ipcMain.handle("update:check", async () => updateManager.check());
+  ipcMain.handle("update:check", async (event, taskId: string) => {
+    const source = await getTaskRuntime(event, taskId).remoteMixClient.getUpdateSource();
+    return updateManager.check(source);
+  });
   ipcMain.handle("update:download-and-install", async (event, taskId: string) => {
     if (hasActiveDesktopWork()) {
       throw new Error("还有混剪、传输或云管家上传任务在进行，请等待完成或停止后再更新");

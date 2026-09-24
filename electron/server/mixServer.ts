@@ -167,6 +167,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  const windowsUpdateMatch = url.pathname.match(/^\/api\/updates\/windows\/([^/]+)$/);
+  if (windowsUpdateMatch && (request.method === "GET" || request.method === "HEAD")) {
+    const requestedName = decodeURIComponent(windowsUpdateMatch[1]);
+    const filePath = await windowsUpdateCache.resolve(requestedName);
+    await sendStaticFile(request, response, filePath);
+    return;
+  }
+
   if (url.pathname !== "/health" && !isAuthorized(request)) {
     sendJson(response, 401, { ok: false, error: "未授权，请在 x-mix-token 请求头传入服务器启动时显示的 Token" });
     return;
@@ -191,14 +199,6 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       projectRetentionHours,
       storage
     });
-    return;
-  }
-
-  const windowsUpdateMatch = url.pathname.match(/^\/api\/updates\/windows\/([^/]+)$/);
-  if (windowsUpdateMatch && (request.method === "GET" || request.method === "HEAD")) {
-    const requestedName = decodeURIComponent(windowsUpdateMatch[1]);
-    const filePath = await windowsUpdateCache.resolve(requestedName);
-    await sendStaticFile(request, response, filePath);
     return;
   }
 

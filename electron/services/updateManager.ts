@@ -45,6 +45,13 @@ interface UpdateManagerOptions {
   scheduleInstall?: (callback: () => void) => void;
 }
 
+interface SelectedUpdateSource {
+  url: string;
+  headers: Record<string, string> | null;
+  label: string;
+  kind: "intranet" | "github";
+}
+
 export class UpdateManager extends EventEmitter {
   private snapshot: UpdateSnapshot;
   private latestRelease?: UpdateReleaseNotes;
@@ -76,7 +83,7 @@ export class UpdateManager extends EventEmitter {
     return structuredClone(this.snapshot);
   }
 
-  async check(): Promise<UpdateSnapshot> {
+  async check(source?: RemoteMixSettings): Promise<UpdateSnapshot> {
     this.setSnapshot({
       status: "checking",
       message: "正在检查最新版本",
@@ -85,7 +92,8 @@ export class UpdateManager extends EventEmitter {
       downloadSource: undefined
     });
     try {
-      const metadata = await this.fetchUpdateMetadata(githubUpdateBaseUrl);
+      const selected = await this.fetchPreferredMetadata(source);
+      const metadata = selected.metadata;
       const release = await this.fetchLatestRelease().catch(() => ({
         version: metadata.version,
         name: `医博生物混剪工具 ${metadata.version}`,
@@ -99,7 +107,7 @@ export class UpdateManager extends EventEmitter {
         status: hasUpdate ? "available" : "not-available",
         message: hasUpdate
           ? canAutoUpdate
-            ? `发现新版本 ${metadata.version}，可直接下载并自动安装`
+            ? `发现新版本 ${metadata.version}，可直接下载并自动安装${selected.source.kind === "intranet" ? "（内网）" : ""}`
             : `发现新版本 ${metadata.version}，当前系统请打开下载页安装`
           : "已经是最新版本",
         availableVersion: metadata.version,
@@ -117,11 +125,11 @@ export class UpdateManager extends EventEmitter {
     if (!this.canAutoUpdate() || !this.updater) {
       throw new Error("自动覆盖安装仅支持已安装的 Windows 正式版");
     }
-    if (this.snapshot.status !== "available") await this.check();
+    if (this.snapshot.status !== "available") await this.check(source);
     if (this.snapshot.status !== "available") return this.getSnapshot();
 
     try {
-      const trusted = this.trustedMetadata ?? await this.fetchUpdateMetadata(githubUpdateBaseUrl);
+      const trusted = this.trustedMetadata ?? (await this.fetchPreferredMetadata(source)).metadata;
       this.updater.autoDownload = false;
       this.updater.autoInstallOnAppQuit = false;
       this.updater.disableDifferentialDownload = true;
@@ -173,12 +181,12 @@ export class UpdateManager extends EventEmitter {
   private async selectDownloadSource(
     source: RemoteMixSettings | undefined,
     trusted: UpdateMetadata
-  ): Promise<{ url: string; headers: Record<string, string> | null; label: string; kind: "intranet" | "github" }> {
-    if (source?.serverUrl && source.token) {
+  ): Promise<SelectedUpdateSource> {
+    if (source?.serverUrl) {
       const mirrorUrl = `${source.serverUrl.replace(/\/+$/, "")}/api/updates/windows`;
-      const headers = { "x-mix-token": source.token };
+      const headers = source.token ? { "x-mix-token": source.token } : null;
       try {
-        const mirror = await this.fetchUpdateMetadata(mirrorUrl, headers);
+        const mirror = await this.fetchUpdateMetadata(mirrorUrl, headers ?? undefined);
         if (!sameMetadata(mirror, trusted)) throw new Error("内网更新源校验信息不一致");
         return { url: mirrorUrl, headers, label: "公司内网服务器", kind: "intranet" };
       } catch {
@@ -186,6 +194,38 @@ export class UpdateManager extends EventEmitter {
       }
     }
     return { url: githubUpdateBaseUrl, headers: null, label: "GitHub", kind: "github" };
+  }
+
+  private async fetchPreferredMetadata(source?: RemoteMixSettings): Promise<{
+    metadata: UpdateMetadata;
+    source: SelectedUpdateSource;
+  }> {
+    let intranetError: unknown;
+    if (source?.serverUrl) {
+      const mirrorUrl = `${source.serverUrl.replace(/\/+$/, "")}/api/updates/windows`;
+      const headers = source.token ? { "x-mix-token": source.token } : null;
+      try {
+        return {
+          metadata: await this.fetchUpdateMetadata(mirrorUrl, headers ?? undefined),
+          source: { url: mirrorUrl, headers, label: "公司内网服务器", kind: "intranet" }
+        };
+      } catch (error) {
+        intranetError = error;
+        this.setSnapshot({ message: "内网更新检查失败，正在尝试 GitHub" });
+      }
+    }
+
+    try {
+      return {
+        metadata: await this.fetchUpdateMetadata(githubUpdateBaseUrl),
+        source: { url: githubUpdateBaseUrl, headers: null, label: "GitHub", kind: "github" }
+      };
+    } catch (githubError) {
+      if (intranetError) {
+        throw new Error(`内网更新源连接失败：${toMessage(intranetError)}；GitHub 更新源连接失败：${toMessage(githubError)}`);
+      }
+      throw githubError;
+    }
   }
 
   private async downloadFrom(
@@ -261,7 +301,7 @@ function assertUpdaterMetadata(
 ): void {
   const file = updateInfo?.files?.find((item) => item.url === trusted.path) ?? updateInfo?.files?.[0];
   if (updateInfo?.version !== trusted.version || file?.url !== trusted.path || file.sha512 !== trusted.sha512) {
-    throw new Error("下载源返回的版本或校验值与 GitHub 不一致，已阻止安装");
+      throw new Error("下载源返回的版本或校验值与已检查版本不一致，已阻止安装");
   }
 }
 

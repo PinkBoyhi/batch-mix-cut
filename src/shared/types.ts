@@ -493,7 +493,7 @@ export interface AppApi {
   disposeTask: (taskId: string) => Promise<void>;
   revealPath: (targetPath: string) => Promise<void>;
   openExternal: (url: string) => Promise<void>;
-  checkForUpdates: () => Promise<UpdateSnapshot>;
+  checkForUpdates: (taskId: string) => Promise<UpdateSnapshot>;
   downloadAndInstallUpdate: (taskId: string) => Promise<UpdateSnapshot>;
   getUpdateStatus: () => Promise<UpdateSnapshot>;
   getUpdateReleaseNotes: () => Promise<UpdateReleaseNotes>;

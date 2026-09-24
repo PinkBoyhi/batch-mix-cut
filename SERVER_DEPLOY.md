@@ -2,7 +2,7 @@
 
 服务器节点用于把混剪计算放到 Linux 服务器上执行。素材需要先放到服务器工作目录，或通过 ZIP 上传接口传到服务器。
 
-0.1.67 起，服务器会在 `updates/windows/` 自动缓存 GitHub 最新 Windows 安装包，并通过 `/api/updates/windows/` 向已配置服务器 Token 的桌面端提供内网下载。服务器会每 10 分钟检查并预热缓存；可用 `MIX_SERVER_UPDATE_SOURCE_URL` 指定其他上游更新源。
+0.1.67 起，服务器会在 `updates/windows/` 自动缓存 GitHub 最新 Windows 安装包，并通过 `/api/updates/windows/` 提供内网下载。0.1.69 起，该接口只允许读取更新元数据、安装包和 blockmap 白名单文件，可以免 Token 使用；项目、任务和云管家接口仍需 Token。服务器会每 10 分钟检查并预热缓存；可用 `MIX_SERVER_UPDATE_SOURCE_URL` 指定其他上游更新源。
 
 ## 启动
 
@@ -57,7 +57,7 @@ pnpm build
 
 0.1.55 起，运行中和排队任务会持久化到服务器工作目录的 `queue/`。服务重启后使用原任务 ID恢复，核对已经发布的成片并继续缺失组合；已完成但尚未被桌面端下载的任务也会保留到项目过期清理。不要单独删除 `queue/` 或仍在处理的 `projects/` 子目录。
 
-启动日志会打印访问 Token，调用除 `/health` 外的接口时需要带请求头：
+启动日志会打印访问 Token。除 `/health`、看板静态页面和 Windows 更新白名单文件外，其他接口需要带请求头：
 
 ```bash
 x-mix-token: <启动日志里的 Token>

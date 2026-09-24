@@ -33,6 +33,28 @@ describe("WindowsUpdateCache", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     await expect(cache.resolve("other.exe")).rejects.toThrow("不存在");
   });
+
+  it("serves cached metadata immediately while refreshing it in the background", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "windows-update-cache-"));
+    temporaryDirectories.push(dir);
+    const installer = Buffer.from("cached-installer");
+    const sha512 = createHash("sha512").update(installer).digest("base64");
+    const yml = updateYml(sha512, installer.length);
+    await fs.writeFile(path.join(dir, "latest.yml"), yml);
+    await fs.writeFile(path.join(dir, "YiboBioMixCut-0.1.67-x64.exe"), installer);
+    let releaseFetch: (() => void) | undefined;
+    const waitingFetch = new Promise<void>((resolve) => { releaseFetch = resolve; });
+    const fetchImpl = vi.fn(async () => {
+      await waitingFetch;
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    const cache = new WindowsUpdateCache(dir, "https://updates.example.com", fetchImpl);
+
+    const metadataPath = await cache.resolve("latest.yml");
+    expect(await fs.readFile(metadataPath, "utf8")).toBe(yml);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    releaseFetch?.();
+  });
 });
 
 function updateYml(sha512: string, size: number): string {
