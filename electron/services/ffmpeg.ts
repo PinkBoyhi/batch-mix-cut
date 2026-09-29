@@ -90,7 +90,10 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
 
     const videoFilters = videoAssets.map((_, index) => {
       const duration = segmentDurations[index].toFixed(6);
-      return `[${index}:v]trim=start=0:duration=${duration},setpts=PTS-STARTPTS,fps=${outputFrameRate},settb=AVTB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v${index}]`;
+      // Some editing apps write an MP4 whose audio track is slightly longer than
+      // its video track. Preserve that spoken tail by holding the last video frame
+      // until the selected segment duration instead of silently cutting the audio.
+      return `[${index}:v]tpad=stop_mode=clone:stop_duration=${duration},trim=start=0:duration=${duration},setpts=PTS-STARTPTS,fps=${outputFrameRate},settb=AVTB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v${index}]`;
     });
     const audioFilters = videoAssets.map((asset, index) => {
       const duration = segmentDurations[index].toFixed(6);
@@ -649,7 +652,12 @@ function evenDimension(value: number): number {
 }
 
 function resolveSegmentDuration(asset: AssetInfo): number {
-  return Math.max(0.1, asset.videoDurationSeconds ?? asset.durationSeconds ?? 0.1);
+  return Math.max(
+    0.1,
+    asset.durationSeconds ?? 0,
+    asset.videoDurationSeconds ?? 0,
+    asset.audioDurationSeconds ?? 0
+  );
 }
 
 function resolveCanvasSize(config: MixProjectConfig, first: AssetInfo): { width: number; height: number } {

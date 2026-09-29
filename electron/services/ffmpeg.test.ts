@@ -76,7 +76,7 @@ describe("exportVideo audio output", () => {
   });
 
   it(
-    "aligns segment transitions to video duration when source audio is longer or shorter",
+    "preserves a longer source-audio tail by holding the final video frame",
     async () => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "yibo-mix-av-sync-"));
       tempDirs.push(tempDir);
@@ -148,11 +148,13 @@ describe("exportVideo audio output", () => {
       await exportVideo(config, combination).promise;
 
       const output = await probeAsset({ id: "output", path: outputPath, name: "output.mp4", kind: "video" });
-      expect(output.videoDurationSeconds).toBeCloseTo(2, 1);
-      expect(output.audioDurationSeconds).toBeCloseTo(2, 1);
+      expect(output.videoDurationSeconds).toBeCloseTo(2.6, 1);
+      expect(output.audioDurationSeconds).toBeCloseTo(2.6, 1);
       expect(Math.abs((output.videoDurationSeconds ?? 0) - (output.audioDurationSeconds ?? 0))).toBeLessThan(0.1);
-      const chroma = await measureFrameChroma(outputPath, 1.2);
-      expect(chroma.uAverage).toBeGreaterThan(chroma.vAverage);
+      const heldFrameChroma = await measureFrameChroma(outputPath, 1.2);
+      expect(heldFrameChroma.vAverage).toBeGreaterThan(heldFrameChroma.uAverage);
+      const nextSegmentChroma = await measureFrameChroma(outputPath, 1.8);
+      expect(nextSegmentChroma.uAverage).toBeGreaterThan(nextSegmentChroma.vAverage);
     },
     30000
   );
