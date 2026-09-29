@@ -111,7 +111,8 @@ async function runRemoteMixSmokeTest({ serverUrl, token }) {
         fixture.config.outputDir,
         fixture.expectedCount,
         `服务器回传成片 ${index + 1}`,
-        fixture.expectedDurations
+        fixture.expectedDurations,
+        fixture.expectedBgmTimestamps
       );
       assertCartesianCombinationCoverage(files, `服务器回传成片 ${index + 1}`);
     }
@@ -132,7 +133,13 @@ async function runLocalMixWorkflowSmokeTest() {
     await manager.start(fixture.config);
     const snapshot = await completion;
     assertCompletedSnapshot(snapshot, "本地完整混剪测试", fixture.expectedCount);
-    const files = await assertWorkflowOutputs(fixture.config.outputDir, fixture.expectedCount, "本地成片", fixture.expectedDurations);
+    const files = await assertWorkflowOutputs(
+      fixture.config.outputDir,
+      fixture.expectedCount,
+      "本地成片",
+      fixture.expectedDurations,
+      fixture.expectedBgmTimestamps
+    );
     assertCartesianCombinationCoverage(files, "本地成片");
     console.log("本地完整混剪测试通过：8 个均匀排列组合、长短音轨对齐、段落无卡帧、BGM 轮换及音量均已校验");
   } finally {
@@ -165,8 +172,8 @@ async function createWorkflowFixture(rootDir, mode) {
   ]);
 
   const assets = {
-    a1: videoAsset(a1, "A-01.mp4", 320, 568, 0.8),
-    a2: videoAsset(a2, "A-02.mp4", 568, 320, 0.7),
+    a1: videoAsset(a1, "A-01.mp4", 320, 568, 0.8, 1.2),
+    a2: videoAsset(a2, "A-02.mp4", 568, 320, 0.7, 0.25),
     b1: videoAsset(b1, "B-01.mp4", 240, 320, 0.7),
     b2: videoAsset(b2, "B-02.mp4", 320, 240, 0.8),
     c1: videoAsset(c1, "C-01.mp4", 320, 568, 0.6),
@@ -227,14 +234,43 @@ async function createWorkflowFixture(rootDir, mode) {
   const expectedDurations = new Map(
     combinations.map((combination) => [
       path.basename(combination.targetVideoPath),
-      config.slots.reduce((total, slot) => total + Number(combination.slotAssets[slot.name]?.durationSeconds ?? 0), 0)
+      config.slots.reduce((total, slot) => {
+        const asset = combination.slotAssets[slot.name];
+        return total + Math.max(
+          Number(asset?.durationSeconds ?? 0),
+          Number(asset?.videoDurationSeconds ?? 0),
+          Number(asset?.audioDurationSeconds ?? 0)
+        );
+      }, 0)
     ])
   );
-  return { config, expectedCount: 8, expectedDurations };
+  const expectedBgmTimestamps = new Map(
+    combinations.map((combination) => {
+      const opening = combination.slotAssets.A;
+      const openingDuration = Math.max(
+        Number(opening?.durationSeconds ?? 0),
+        Number(opening?.videoDurationSeconds ?? 0),
+        Number(opening?.audioDurationSeconds ?? 0)
+      );
+      return [path.basename(combination.targetVideoPath), openingDuration + 0.2];
+    })
+  );
+  return { config, expectedCount: 8, expectedDurations, expectedBgmTimestamps };
 }
 
-function videoAsset(filePath, name, width, height, durationSeconds) {
-  return { id: `smoke-${name}`, path: filePath, name, kind: "video", hasAudio: true, width, height, durationSeconds };
+function videoAsset(filePath, name, width, height, durationSeconds, audioDurationSeconds = durationSeconds) {
+  return {
+    id: `smoke-${name}`,
+    path: filePath,
+    name,
+    kind: "video",
+    hasAudio: true,
+    width,
+    height,
+    durationSeconds,
+    videoDurationSeconds: durationSeconds,
+    audioDurationSeconds
+  };
 }
 
 function audioAsset(filePath, name) {
@@ -270,7 +306,7 @@ function assertCompletedSnapshot(snapshot, label, expectedCount) {
   }
 }
 
-async function assertWorkflowOutputs(outputDir, expectedCount, label, expectedDurations) {
+async function assertWorkflowOutputs(outputDir, expectedCount, label, expectedDurations, expectedBgmTimestamps) {
   const videosDir = path.join(outputDir, "videos");
   const files = (await fs.readdir(videosDir)).filter((file) => file.toLowerCase().endsWith(".mp4")).sort();
   if (files.length !== expectedCount) {
@@ -303,7 +339,13 @@ async function assertWorkflowOutputs(outputDir, expectedCount, label, expectedDu
     await assertVisibleVideoFrame(filePath, label, file);
     await assertAudibleAudio(filePath, label, file);
     await assertAudibleAudioAtTimestamp(filePath, 1, label, file);
-    await assertBgmToneAtTimestamp(filePath, 1, index % 2 === 0 ? 800 : 920, label, file);
+    await assertBgmToneAtTimestamp(
+      filePath,
+      expectedBgmTimestamps.get(file),
+      index % 2 === 0 ? 800 : 920,
+      label,
+      file
+    );
   }));
   return files;
 }

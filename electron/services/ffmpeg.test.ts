@@ -76,7 +76,7 @@ describe("exportVideo audio output", () => {
   });
 
   it(
-    "preserves a longer source-audio tail by holding the final video frame",
+    "preserves a longer source-audio tail without cutting the input timeline",
     async () => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "yibo-mix-av-sync-"));
       tempDirs.push(tempDir);

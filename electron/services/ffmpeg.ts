@@ -90,10 +90,9 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
 
     const videoFilters = videoAssets.map((_, index) => {
       const duration = segmentDurations[index].toFixed(6);
-      // Some editing apps write an MP4 whose audio track is slightly longer than
-      // its video track. Preserve that spoken tail by holding the last video frame
-      // until the selected segment duration instead of silently cutting the audio.
-      return `[${index}:v]tpad=stop_mode=clone:stop_duration=${duration},trim=start=0:duration=${duration},setpts=PTS-STARTPTS,fps=${outputFrameRate},settb=AVTB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v${index}]`;
+      // Keep the source container's complete timeline. In particular, do not use
+      // the shorter video-stream duration to cut a longer spoken-audio tail.
+      return `[${index}:v]trim=start=0:duration=${duration},setpts=PTS-STARTPTS,fps=${outputFrameRate},settb=AVTB,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v${index}]`;
     });
     const audioFilters = videoAssets.map((asset, index) => {
       const duration = segmentDurations[index].toFixed(6);
