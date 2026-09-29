@@ -79,7 +79,10 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
       args.push("-filter_complex_threads", String(Math.max(1, Math.floor(ffmpegThreadLimit / 2))));
     }
     for (const asset of videoAssets) {
-      args.push("-i", asset.path);
+      // Some phone and screen-recording MP4 files contain damaged packets or
+      // incomplete timestamps even though tolerant players appear to play them.
+      // Do not bake decoder concealment blocks into every mixed output.
+      args.push("-fflags", "+genpts+discardcorrupt", "-err_detect", "careful", "-i", asset.path);
     }
     for (const track of bgmTracks) {
       args.push("-stream_loop", "-1", "-i", track.asset.path);
@@ -160,15 +163,14 @@ export function exportVideo(config: MixProjectConfig, combination: MixCombinatio
     args.push("-filter_complex", filters.join(";"), "-map", "[vout]", "-map", "[aout]");
 
     args.push(
-      "-c:v",
-      "libx264",
-      "-preset",
-      config.videoProfile.preset,
-      ...(ffmpegThreadLimit ? ["-threads", String(ffmpegThreadLimit)] : []),
-      "-crf",
-      String(config.videoProfile.crf),
-      "-r",
-      String(outputFrameRate),
+      ...buildPlatformSafeVideoEncodingArgs(
+        outputFrameRate,
+        width,
+        height,
+        config.videoProfile.preset,
+        config.videoProfile.crf,
+        ffmpegThreadLimit
+      ),
       "-c:a",
       "aac",
       "-movflags",
@@ -226,6 +228,47 @@ function readPositiveInteger(value: string | undefined): number | undefined {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) return undefined;
   return Math.floor(parsed);
+}
+
+
+export function buildPlatformSafeVideoEncodingArgs(
+  frameRate: 30 | 60,
+  width: number,
+  height: number,
+  preset: string,
+  crf: number,
+  threadLimit?: number
+): string[] {
+  const gopSize = frameRate * 2;
+  const args = [
+    "-c:v", "libx264",
+    "-preset", preset,
+    ...(threadLimit ? ["-threads", String(threadLimit)] : []),
+    "-crf", String(crf),
+    "-pix_fmt", "yuv420p",
+    "-profile:v", "high",
+    "-tag:v", "avc1",
+    "-g", String(gopSize),
+    "-keyint_min", String(frameRate),
+    "-force_key_frames", "expr:gte(t,n_forced*2)",
+    "-flags", "+cgop",
+    "-x264-params", "open-gop=0:force-cfr=1",
+    "-r", String(frameRate),
+    "-fps_mode", "cfr",
+    "-video_track_timescale", "90000"
+  ];
+  const level = resolveH264Level(width, height, frameRate);
+  if (level) args.push("-level:v", level);
+  return args;
+}
+
+export function resolveH264Level(width: number, height: number, frameRate: 30 | 60): "4.1" | "4.2" | undefined {
+  const longEdge = Math.max(width, height);
+  const shortEdge = Math.min(width, height);
+  if (longEdge <= 1920 && shortEdge <= 1080) {
+    return frameRate === 60 ? "4.2" : "4.1";
+  }
+  return undefined;
 }
 
 export function resolveOutputFrameRate(frameRate: unknown): 30 | 60 {

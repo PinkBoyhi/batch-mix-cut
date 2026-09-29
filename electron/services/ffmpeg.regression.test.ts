@@ -73,6 +73,42 @@ describe("export integrity and user controls", () => {
     expect(stdout.trim()).toBe("60/1");
   }, 30000);
 
+  it("writes closed, frequent-keyframe H.264 output for short-video platforms", async () => {
+    const source = path.join(dir, "motion-source.mp4");
+    await makeVideo(source, 5);
+    const output = await exportConfig(config(asset(source), "platform-safe"));
+    const { stdout: streamInfo } = await exec(getFfprobePath(), [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=codec_name,profile,level,pix_fmt,avg_frame_rate,codec_tag_string",
+      "-of", "json",
+      output
+    ]);
+    const stream = JSON.parse(streamInfo).streams?.[0];
+    expect(stream).toEqual(expect.objectContaining({
+      codec_name: "h264",
+      profile: "High",
+      level: 41,
+      pix_fmt: "yuv420p",
+      avg_frame_rate: "30/1",
+      codec_tag_string: "avc1"
+    }));
+
+    const { stdout: frames } = await exec(getFfprobePath(), [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-skip_frame", "nokey",
+      "-show_entries", "frame=best_effort_timestamp_time",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      output
+    ]);
+    const keyframeTimes = frames.trim().split(/\s+/).map(Number).filter(Number.isFinite);
+    expect(keyframeTimes.length).toBeGreaterThanOrEqual(3);
+    for (let index = 1; index < keyframeTimes.length; index += 1) {
+      expect(keyframeTimes[index] - keyframeTimes[index - 1]).toBeLessThanOrEqual(2.1);
+    }
+  }, 30000);
+
   it("re-probes a replaced source even if its path is unchanged", async () => {
     const source = path.join(dir, "same.mp4"); await makeVideo(source);
     await exportConfig(config(await probeAsset(asset(source)), "first"));

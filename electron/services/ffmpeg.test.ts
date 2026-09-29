@@ -5,11 +5,42 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AssetInfo, MixCombination, MixProjectConfig } from "../../src/shared/types.js";
-import { exportVideo, mergeAssetMetadata, resolveBgmTargetDb, shouldPreserveLegacyLoudness } from "./ffmpeg.js";
+import {
+  buildPlatformSafeVideoEncodingArgs,
+  exportVideo,
+  mergeAssetMetadata,
+  resolveBgmTargetDb,
+  resolveH264Level,
+  shouldPreserveLegacyLoudness
+} from "./ffmpeg.js";
 import { getFfmpegPath } from "./ffmpegBinaries.js";
 import { probeAsset } from "./mediaProbe.js";
 
 let tempDirs: string[] = [];
+
+describe("platform-safe H.264 output", () => {
+  it("uses closed CFR GOPs and mainstream H.264 metadata", () => {
+    const args = buildPlatformSafeVideoEncodingArgs(30, 1080, 1920, "fast", 20, 4);
+    expect(args).toEqual(expect.arrayContaining([
+      "-profile:v", "high",
+      "-tag:v", "avc1",
+      "-pix_fmt", "yuv420p",
+      "-g", "60",
+      "-keyint_min", "30",
+      "-force_key_frames", "expr:gte(t,n_forced*2)",
+      "-flags", "+cgop",
+      "-x264-params", "open-gop=0:force-cfr=1",
+      "-fps_mode", "cfr",
+      "-video_track_timescale", "90000",
+      "-level:v", "4.1"
+    ]));
+  });
+
+  it("uses level 4.2 for vertical 1080p60 and avoids lying about larger canvases", () => {
+    expect(resolveH264Level(1080, 1920, 60)).toBe("4.2");
+    expect(resolveH264Level(3840, 2160, 30)).toBeUndefined();
+  });
+});
 
 afterEach(async () => {
   await Promise.all(tempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
